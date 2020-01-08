@@ -90,19 +90,21 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 			}
 
 			system("cls");
-			printf(
+			puts(
 				"\n"
-				"  Port: %hu\n"
-				"  IP:\n", boundPort);
+				"  [IP]");
 			char ipv4str[16];
 			addrinfo* ai = result;
 			u_int i = 1;
 			while (ai) {
 				inet_ntop(ai->ai_family, &((sockaddr_in*)ai->ai_addr)->sin_addr, ipv4str, 16);
-				printf("    (%u) %s\n", i, ipv4str);
+				printf("       (%u)  %s\n", i, ipv4str);
 				ai = ai->ai_next;
 				++i;
 			}
+			printf(
+				"\n"
+				"  [Port] =      %hu\n", boundPort);
 			freeaddrinfo(result);
 			//Sleep(1000);
 			WaitForSingleObject(eventConnected, 1000);
@@ -110,8 +112,104 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 	}
 }
 
-int __cdecl main(void)
+
+int scanCodeArraySize = 8;
+short* scanCodeArray = (short*)malloc(scanCodeArraySize << 1);
+
+// I use 0 to indicates that RepeatKeyStrokeThread is currently not repeating key stroke.
+// Take care of this variable. For the mutex 'scanCodeArrayMutex' relies on this number to work properly.
+int numScanCodesFilled = 0;
+HANDLE scanCodeArrayMutex = CreateMutex(NULL, true, NULL);
+
+DWORD WINAPI RepeatKeyStrokeThread(LPVOID lpParam) {
+
+	INPUT input;
+	input.type = INPUT_KEYBOARD;
+	input.ki.dwFlags = KEYEVENTF_SCANCODE;
+	input.ki.time = 0;
+
+	while (1) {
+		WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+		for (int i = 0; i < numScanCodesFilled; ++i) {
+			input.ki.wScan = scanCodeArray[i];
+			SendInput(1, &input, sizeof(input));
+		}
+		ReleaseMutex(scanCodeArrayMutex);
+		Sleep(30);
+	}
+}
+
+void ShowLastErrorMessage(DWORD errCode, LPCTSTR errTitle)
 {
+	LPTSTR errorText = NULL;
+
+	FormatMessage(
+		FORMAT_MESSAGE_FROM_SYSTEM |
+		FORMAT_MESSAGE_ALLOCATE_BUFFER |
+		FORMAT_MESSAGE_IGNORE_INSERTS,
+		NULL,
+		errCode,
+		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+		(LPTSTR)&errorText,
+		0,
+		NULL);
+
+	if (NULL != errorText)
+	{
+		wprintf(TEXT("%s:\nError Code: %u\n%s\n"), errTitle, errCode, errorText);
+
+		LocalFree(errorText);
+		errorText = NULL;
+	}
+}
+
+BOOL SetWinSta0Desktop(LPCTSTR szDesktopName)
+{
+	BOOL bSuccess = FALSE;
+
+	HWINSTA hWinSta0 = OpenWindowStation(TEXT("WinSta0"), FALSE, MAXIMUM_ALLOWED);
+	if (NULL == hWinSta0) { ShowLastErrorMessage(GetLastError(), TEXT("OpenWindowStation")); }
+
+	bSuccess = SetProcessWindowStation(hWinSta0);
+	if (!bSuccess) { ShowLastErrorMessage(GetLastError(), TEXT("SetProcessWindowStation")); }
+
+	HDESK hDesk = OpenDesktop(szDesktopName, 0, FALSE, MAXIMUM_ALLOWED);
+	if (NULL == hDesk) { ShowLastErrorMessage(GetLastError(), TEXT("OpenDesktop")); }
+
+	bSuccess = SetThreadDesktop(hDesk);
+	if (!bSuccess) { ShowLastErrorMessage(GetLastError(), TEXT("SetThreadDesktop")); }
+
+	if (hDesk != NULL) { CloseDesktop(hDesk); }
+	if (hWinSta0 != NULL) { CloseWindowStation(hWinSta0); }
+	return bSuccess;
+}
+
+//int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
+//	PSTR lpCmdLine, INT nCmdShow)
+int main()
+{
+	/*if (!SetWinSta0Desktop(TEXT("winlogon"))) {
+		system("pause");
+		return 1;
+	}*/
+	DWORD prev_mode;
+	HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+	HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+	CONSOLE_CURSOR_INFO cursorInfo = { 1 };
+	SMALL_RECT rect = { 0,0,32,10 };
+	COORD screenBufSize = { 33,11 };
+	SetConsoleTextAttribute(hOut, BACKGROUND_BLUE | BACKGROUND_GREEN | BACKGROUND_RED | BACKGROUND_INTENSITY);
+	SetConsoleWindowInfo(hOut, TRUE, &rect);
+	SetConsoleScreenBufferSize(hOut, screenBufSize);
+	GetConsoleMode(hIn, &prev_mode);
+	SetConsoleMode(hIn, ENABLE_EXTENDED_FLAGS | (prev_mode & ~ENABLE_QUICK_EDIT_MODE));
+	SetConsoleCursorInfo(hOut, &cursorInfo);
+
+
+	if (scanCodeArray == NULL || scanCodeArrayMutex == NULL) {
+		return 1;
+	}
+
 	WSADATA wsaData;
 	int iResult;
 
@@ -190,24 +288,34 @@ int __cdecl main(void)
 		return 1;
 	}
 
-	DWORD MyThreadFunctionID;
 	HANDLE handleIpPortPrintingThread = CreateThread(
 		NULL,                   // default security attributes
 		0,                      // use default stack size  
-		IpPortPrintingThread,       // thread function name
+		IpPortPrintingThread,   // thread function name
 		NULL,                   // argument to thread function 
 		0,                      // use default creation flags 
-		&MyThreadFunctionID);   // returns the thread identifier 
-
-	// Check the return value for success.
-	// If CreateThread fails, terminate execution. 
-	// This will automatically clean up threads and memory. 
+		NULL);                  // returns the thread identifier 
 	if (handleIpPortPrintingThread == NULL)
 	{
 		puts("CreateThread IpPortPrintingThread failed");
 		closesocket(ListenSocket);
 		WSACleanup();
 		return 1;
+	}
+
+	HANDLE handleRepeatKeyStrokeThread = CreateThread(
+		NULL,                   // default security attributes
+		0,                      // use default stack size  
+		RepeatKeyStrokeThread,  // thread function name
+		NULL,                   // argument to thread function 
+		0,                      // use default creation flags 
+		NULL);                  // returns the thread identifier 
+	if (handleRepeatKeyStrokeThread == NULL)
+	{
+		puts("CreateThread handleRepeatKeyStrokeThread failed");
+		closesocket(ListenSocket);
+		WSACleanup();
+		ExitProcess(1);
 	}
 
 	while (1) {
@@ -270,9 +378,18 @@ int __cdecl main(void)
 						SendInput(1, &input, sizeof(input));
 						break; }
 					case ButtonAction::Down: {
+						if (numScanCodesFilled != 0)
+							WaitForSingleObject(scanCodeArrayMutex, INFINITE);
 						SendInput(1, &input, sizeof(input));
+						scanCodeArray[0] = scanCode;
+						numScanCodesFilled = 1;
+						ReleaseMutex(scanCodeArrayMutex);
 						break; }
 					case ButtonAction::Up: {
+						if (numScanCodesFilled != 0) {
+							WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+							numScanCodesFilled = 0;
+						}
 						input.ki.dwFlags |= KEYEVENTF_KEYUP;
 						SendInput(1, &input, sizeof(input));
 						break; }
@@ -321,12 +438,31 @@ int __cdecl main(void)
 						}
 						break; }
 					case ButtonAction::Down: {
-						for (int i = 0; i < numScanCodes; ++i) {
+						if (numScanCodesFilled != 0)
+							WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+
+						if (numScanCodes > scanCodeArraySize) {
+							void* newScanCodeArray = realloc(scanCodeArray, scanCodeByteLen);
+							if (newScanCodeArray == NULL) {
+								iResult = 0;
+								break;
+							}
+							scanCodeArraySize = numScanCodes;
+							scanCodeArray = (short*)newScanCodeArray;
+						}
+						/*for (int i = 0; i < numScanCodes; ++i) {
 							input.ki.wScan = scanCodes[i];
 							SendInput(1, &input, sizeof(input));
-						}
+						}*/
+						memcpy(scanCodeArray, scanCodes, scanCodeByteLen);
+						numScanCodesFilled = numScanCodes;
+						ReleaseMutex(scanCodeArrayMutex);
 						break; }
 					case ButtonAction::Up: {
+						if (numScanCodesFilled != 0) {
+							WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+							numScanCodesFilled = 0;
+						}
 						input.ki.dwFlags |= KEYEVENTF_KEYUP;
 						for (int i = 0; i < numScanCodes; ++i) {
 							input.ki.wScan = scanCodes[i];
@@ -404,9 +540,9 @@ int __cdecl main(void)
 					}
 
 					int textByteLen = ntohl(*(int*)recvbuf);
+					int numWchars = textByteLen >> 1;
 					char inputTextMode = recvbuf[4];
 					bool hold = recvbuf[5];
-
 
 					HANDLE textMemHandle = GlobalAlloc(GMEM_MOVEABLE, textByteLen + 2);
 					if (textMemHandle == NULL)
@@ -416,51 +552,87 @@ int __cdecl main(void)
 					}
 					// Lock the handle and copy the text to the buffer. 
 					char16_t* wstr = (char16_t*)GlobalLock(textMemHandle);
+					if (wstr == NULL) {
+						iResult = 0;
+						GlobalFree(textMemHandle);
+						break;
+					}
 					iResult = recv(ClientSocket, (char*)wstr, textByteLen, MSG_WAITALL);
 					if (iResult != textByteLen) {
 						iResult = 0;
-						GlobalFree(textMemHandle);// This can free a locked memory.
+						GlobalFree(textMemHandle); // This can free a locked memory.
 						break;
 					}
-					wstr[textByteLen >> 1] = 0; // null character 
-					GlobalUnlock(textMemHandle);
+					switch (inputTextMode)
+					{
+					case InputTextMode::SendInput: {
+						INPUT input;
+						input.type = INPUT_KEYBOARD;
+						input.ki.wVk = 0;
+						input.ki.dwFlags = KEYEVENTF_UNICODE;
+						input.ki.time = 0;
 
-					int result;
-					result = OpenClipboard(window);
-					if (result == 0) {
+						for (int i = 0; i < numWchars; ++i) {
+							input.ki.wScan = wstr[i];
+							SendInput(1, &input, sizeof(input));
+						}
 						GlobalFree(textMemHandle);
-						break;
-					}
-					result = EmptyClipboard();
-					if (result == 0) {
+						break; }
+					case InputTextMode::Paste: {
+						wstr[numWchars] = 0; // null character 
+						GlobalUnlock(textMemHandle);
+
+						int result;
+						result = OpenClipboard(window);
+						if (result == 0) {
+							GlobalFree(textMemHandle);
+							break;
+						}
+						result = EmptyClipboard();
+						if (result == 0) {
+							CloseClipboard();
+							GlobalFree(textMemHandle);
+							break;
+						}
+						HANDLE hResult;
+						hResult = SetClipboardData(CF_UNICODETEXT, textMemHandle);
+						if (hResult == NULL) {
+							CloseClipboard();
+							GlobalFree(textMemHandle);
+							break;
+						}
 						CloseClipboard();
-						GlobalFree(textMemHandle);
+
+						if (hold) {
+							if (numScanCodesFilled != 0)
+								WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+							scanCodeArray[0] = SCS1::L_CTRL;
+							scanCodeArray[1] = SCS1::V;
+							numScanCodesFilled = 2;
+							ReleaseMutex(scanCodeArrayMutex);
+						}
+						else {
+							INPUT input;
+							input.type = INPUT_KEYBOARD;
+							input.ki.dwFlags = KEYEVENTF_SCANCODE;
+							input.ki.time = 0;
+
+							input.ki.wScan = SCS1::L_CTRL;
+							SendInput(1, &input, sizeof(input));
+							input.ki.wScan = SCS1::V;
+							SendInput(1, &input, sizeof(input));
+
+							input.ki.dwFlags |= KEYEVENTF_KEYUP;
+							input.ki.wScan = SCS1::L_CTRL;
+							SendInput(1, &input, sizeof(input));
+							input.ki.wScan = SCS1::V;
+							SendInput(1, &input, sizeof(input));
+						}
+						break; }
+					default:
+						iResult = 0;
 						break;
 					}
-					HANDLE hResult;
-					hResult = SetClipboardData(CF_UNICODETEXT, textMemHandle);
-					if (hResult == NULL) {
-						CloseClipboard();
-						GlobalFree(textMemHandle);
-						break;
-					}
-					CloseClipboard();
-
-					INPUT input;
-					input.type = INPUT_KEYBOARD;
-					input.ki.dwFlags = KEYEVENTF_SCANCODE;
-					input.ki.time = 0;
-
-					input.ki.wScan = SCS1::L_CTRL;
-					SendInput(1, &input, sizeof(input));
-					input.ki.wScan = SCS1::V;
-					SendInput(1, &input, sizeof(input));
-
-					input.ki.dwFlags |= KEYEVENTF_KEYUP;
-					input.ki.wScan = SCS1::L_CTRL;
-					SendInput(1, &input, sizeof(input));
-					input.ki.wScan = SCS1::V;
-					SendInput(1, &input, sizeof(input));
 					break; }
 				default: {
 					iResult = 0;

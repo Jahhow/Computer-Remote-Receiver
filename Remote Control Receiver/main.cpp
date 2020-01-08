@@ -49,8 +49,6 @@ bool connected = false;
 HANDLE eventConnected;
 
 DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
-	printf("IpPortPrintingThread\n");
-
 	int iResult;
 	addrinfo* result = NULL;
 	addrinfo hints;
@@ -73,7 +71,6 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 				WSACleanup();
 				ExitProcess(1);
 			}
-			connected = false;
 		}
 		else {
 			// Resolve the server address and port
@@ -216,6 +213,12 @@ int __cdecl main(void)
 			continue;
 		}
 
+		iResult = recv(ClientSocket, recvbuf, 4, MSG_WAITALL);
+		if (iResult != 4) {
+			closesocket(ClientSocket);
+			continue;
+		}
+
 		connected = true;
 		iResult = SetEvent(eventConnected);
 		if (iResult == 0) {
@@ -227,17 +230,17 @@ int __cdecl main(void)
 		// Receive until the peer shuts down the connection
 		do {
 			// Receive a Msg constant
-			iResult = recv(ClientSocket, recvbuf, 1, 0);
+			iResult = recv(ClientSocket, recvbuf, 1, MSG_WAITALL);
 			if (iResult > 0) {
 				switch (recvbuf[0])
 				{
 				case Msg::KeyboardScanCode: {
-					iResult = recv(ClientSocket, recvbuf, 3, 0);
+					iResult = recv(ClientSocket, recvbuf, 3, MSG_WAITALL);
 					if (iResult != 3) {
 						iResult = 0;
 						break;
 					}
-					
+
 					u_short scanCode = ntohs(*(u_short*)recvbuf);
 					char buttonAction = recvbuf[2];
 
@@ -266,6 +269,61 @@ int __cdecl main(void)
 					}
 					break; }
 				case Msg::KeyboardScanCodeCombination: {
+					iResult = recv(ClientSocket, recvbuf, 2, MSG_WAITALL);
+					if (iResult != 2) {
+						iResult = 0;
+						break;
+					}
+
+					char buttonAction = recvbuf[0];
+					u_char scanCodeByteLen = recvbuf[1];
+
+					iResult = recv(ClientSocket, recvbuf, scanCodeByteLen, MSG_WAITALL);
+					if (iResult != scanCodeByteLen) {
+						iResult = 0;
+						break;
+					}
+
+					INPUT input;
+					input.type = INPUT_KEYBOARD;
+					input.ki.dwFlags = KEYEVENTF_SCANCODE;
+					input.ki.time = 0;
+
+					int numScanCodes = scanCodeByteLen >> 1;
+					u_short* scanCodes = (u_short*)recvbuf;
+					for (int i = 0; i < numScanCodes; ++i)
+						scanCodes[i] = ntohs(scanCodes[i]);
+					switch (buttonAction)
+					{
+					case ButtonAction::Click: {
+						for (int i = 0; i < numScanCodes; ++i) {
+							input.ki.wScan = scanCodes[i];
+							SendInput(1, &input, sizeof(input));
+						}
+
+						input.ki.dwFlags |= KEYEVENTF_KEYUP;
+
+						for (int i = 0; i < numScanCodes; ++i) {
+							input.ki.wScan = scanCodes[i];
+							SendInput(1, &input, sizeof(input));
+						}
+						break; }
+					case ButtonAction::Down: {
+						for (int i = 0; i < numScanCodes; ++i) {
+							input.ki.wScan = scanCodes[i];
+							SendInput(1, &input, sizeof(input));
+						}
+						break; }
+					case ButtonAction::Up: {
+						input.ki.dwFlags |= KEYEVENTF_KEYUP;
+						for (int i = 0; i < numScanCodes; ++i) {
+							input.ki.wScan = scanCodes[i];
+							SendInput(1, &input, sizeof(input));
+						}
+						break; }
+					default:
+						break;
+					}
 					break; }
 				case Msg::MoveMouse: {
 					break; }
@@ -301,12 +359,12 @@ int __cdecl main(void)
 		} while (iResult > 0);
 
 		// shutdown the 'send' connection since we're done
-		iResult = shutdown(ClientSocket, SD_SEND);
+		/*iResult = shutdown(ClientSocket, SD_SEND);
 		if (iResult == SOCKET_ERROR) {
 			printf("shutdown failed with error: %d\n", WSAGetLastError());
 			closesocket(ClientSocket);
 			break;
-		}
+		}*/
 
 		// cleanup
 		closesocket(ClientSocket);

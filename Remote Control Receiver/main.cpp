@@ -110,10 +110,12 @@ int __cdecl main(void)
 	SOCKET ListenSocket = INVALID_SOCKET;
 	SOCKET ClientSocket = INVALID_SOCKET;
 
-
 	int iSendResult;
 	char recvbuf[DEFAULT_BUFLEN];
-	int recvbuflen = DEFAULT_BUFLEN;
+
+	INPUT mouseButtonInput;
+	ZeroMemory(&mouseButtonInput, sizeof(mouseButtonInput));
+	mouseButtonInput.type = INPUT_MOUSE;
 
 	// Initialize Winsock
 	iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -326,20 +328,66 @@ int __cdecl main(void)
 					}
 					break; }
 				case Msg::MoveMouse: {
+					iResult = recv(ClientSocket, recvbuf, 4, MSG_WAITALL);
+					if (iResult != 4) {
+						iResult = 0;
+						break;
+					}
+
+					short* delta = (short*)recvbuf;
+
+					INPUT input;
+					input.type = INPUT_MOUSE;
+					input.mi.dx = (short)ntohs(delta[0]);
+					input.mi.dy = (short)ntohs(delta[1]);
+					input.mi.mouseData = 0;
+					input.mi.dwFlags = MOUSEEVENTF_MOVE;
+					input.mi.time = 0;
+
+					SendInput(1, &input, sizeof(input));
 					break; }
 				case Msg::MouseLeftClick: {
+					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
 					break; }
 				case Msg::MouseLeftDown: {
+					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
 					break; }
 				case Msg::MouseLeftUp: {
+					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
 					break; }
 				case Msg::MouseRightClick: {
+					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
 					break; }
 				case Msg::MouseRightDown: {
+					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
 					break; }
 				case Msg::MouseRightUp: {
+					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
 					break; }
 				case Msg::MouseWheel: {
+					iResult = recv(ClientSocket, recvbuf, 4, MSG_WAITALL);
+					if (iResult != 4) {
+						iResult = 0;
+						break;
+					}
+
+					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_WHEEL;
+					mouseButtonInput.mi.mouseData = ntohl(*(int*)recvbuf);
+					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+
+					// I borrow this variable 'mouseButtonInput' just for speed.
+					// Set to 0 for this variable is actually defined for mouse button input events.
+					mouseButtonInput.mi.mouseData = 0;
 					break; }
 				case Msg::PasteText: {
 					break; }

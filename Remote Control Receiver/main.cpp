@@ -20,6 +20,30 @@ struct ServerHeader
 	int Version = htonl(1);
 } serverHeader;
 
+class Msg {
+public:
+	static const char
+		KeyboardScanCode = 0,
+		KeyboardScanCodeCombination = 1,
+		MoveMouse = 2,
+		MouseLeftClick = 3,
+		MouseLeftDown = 4,
+		MouseLeftUp = 5,
+		MouseRightClick = 6,
+		MouseRightDown = 7,
+		MouseRightUp = 8,
+		MouseWheel = 9,
+		PasteText = 10;
+};
+
+class ButtonAction {
+public:
+	static const char
+		Click = 0,
+		Down = 1,
+		Up = 2;
+};
+
 u_short boundPort;
 bool connected = false;
 HANDLE eventConnected;
@@ -61,17 +85,16 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 			}
 
 			system("cls");
-			//SetConsoleCursorPosition(StdoutHandle, coord);
-
 			printf(
-				"Port: %hu\n"
-				"IP:\n", boundPort);
+				"\n"
+				"  Port: %hu\n"
+				"  IP:\n", boundPort);
 			char ipv4str[16];
 			addrinfo* ai = result;
 			u_int i = 1;
 			while (ai) {
 				inet_ntop(ai->ai_family, &((sockaddr_in*)ai->ai_addr)->sin_addr, ipv4str, 16);
-				printf("  (%u) %s\n", i, ipv4str);
+				printf("    (%u) %s\n", i, ipv4str);
 				ai = ai->ai_next;
 				++i;
 			}
@@ -143,7 +166,7 @@ int __cdecl main(void)
 	}
 	boundPort = ntohs(sa.sin_port);
 
-	iResult = listen(ListenSocket, SOMAXCONN);
+	iResult = listen(ListenSocket, 2);
 	if (iResult == SOCKET_ERROR) {
 		printf("listen failed with error: %d\n", WSAGetLastError());
 		closesocket(ListenSocket);
@@ -203,23 +226,71 @@ int __cdecl main(void)
 
 		// Receive until the peer shuts down the connection
 		do {
-			iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
+			// Receive a Msg constant
+			iResult = recv(ClientSocket, recvbuf, 1, 0);
 			if (iResult > 0) {
-				printf("Bytes received: %d\n", iResult);
+				switch (recvbuf[0])
+				{
+				case Msg::KeyboardScanCode: {
+					iResult = recv(ClientSocket, recvbuf, 3, 0);
+					if (iResult != 3) {
+						iResult = 0;
+						break;
+					}
+					
+					u_short scanCode = ntohs(*(u_short*)recvbuf);
+					char buttonAction = recvbuf[2];
 
-				// Echo the buffer back to the sender
-				/*iSendResult = send(ClientSocket, recvbuf, iResult, 0);
-				if (iSendResult == SOCKET_ERROR) {
-					printf("send failed with error: %d\n", WSAGetLastError());
-					closesocket(ClientSocket);
-					WSACleanup();
-					return 1;
+					INPUT input;
+					input.type = INPUT_KEYBOARD;
+					input.ki.dwFlags = KEYEVENTF_SCANCODE;
+					input.ki.wScan = scanCode;
+					input.ki.time = 0;
+
+					switch (buttonAction)
+					{
+					case ButtonAction::Click: {
+						SendInput(1, &input, sizeof(input));
+						input.ki.dwFlags |= KEYEVENTF_KEYUP;
+						SendInput(1, &input, sizeof(input));
+						break; }
+					case ButtonAction::Down: {
+						SendInput(1, &input, sizeof(input));
+						break; }
+					case ButtonAction::Up: {
+						input.ki.dwFlags |= KEYEVENTF_KEYUP;
+						SendInput(1, &input, sizeof(input));
+						break; }
+					default:
+						break;
+					}
+					break; }
+				case Msg::KeyboardScanCodeCombination: {
+					break; }
+				case Msg::MoveMouse: {
+					break; }
+				case Msg::MouseLeftClick: {
+					break; }
+				case Msg::MouseLeftDown: {
+					break; }
+				case Msg::MouseLeftUp: {
+					break; }
+				case Msg::MouseRightClick: {
+					break; }
+				case Msg::MouseRightDown: {
+					break; }
+				case Msg::MouseRightUp: {
+					break; }
+				case Msg::MouseWheel: {
+					break; }
+				case Msg::PasteText: {
+					break; }
+				default: {
+					iResult = 0;
+					break; }
 				}
-				printf("Bytes sent: %d\n", iSendResult);*/
 			}
-			else if (iResult == 0)
-				printf("Connection closing...\n");
-			else {
+			else if (iResult < 0) {
 				printf("recv failed with error: %d\n", WSAGetLastError());
 				closesocket(ListenSocket);
 				closesocket(ClientSocket);
@@ -229,7 +300,7 @@ int __cdecl main(void)
 
 		} while (iResult > 0);
 
-		// shutdown the connection since we're done
+		// shutdown the 'send' connection since we're done
 		iResult = shutdown(ClientSocket, SD_SEND);
 		if (iResult == SOCKET_ERROR) {
 			printf("shutdown failed with error: %d\n", WSAGetLastError());

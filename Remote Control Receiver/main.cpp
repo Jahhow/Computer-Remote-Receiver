@@ -5,6 +5,7 @@
 #include <ws2tcpip.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "SCS1.h"
 
 // Need to link with Ws2_32.lib
 #pragma comment (lib, "Ws2_32.lib")
@@ -33,7 +34,7 @@ public:
 		MouseRightDown = 7,
 		MouseRightUp = 8,
 		MouseWheel = 9,
-		PasteText = 10;
+		InputText = 10;
 };
 
 class ButtonAction {
@@ -42,6 +43,13 @@ public:
 		Click = 0,
 		Down = 1,
 		Up = 2;
+};
+
+class InputTextMode {
+public:
+	static const char
+		SendInput = 0,
+		Paste = 1;
 };
 
 u_short boundPort;
@@ -113,9 +121,11 @@ int __cdecl main(void)
 	int iSendResult;
 	char recvbuf[DEFAULT_BUFLEN];
 
-	INPUT mouseButtonInput;
-	ZeroMemory(&mouseButtonInput, sizeof(mouseButtonInput));
-	mouseButtonInput.type = INPUT_MOUSE;
+	INPUT mouseInput;
+	mouseInput.type = INPUT_MOUSE;
+	ZeroMemory(&mouseInput.mi, sizeof(mouseInput.mi));
+
+	HWND window = GetConsoleWindow();
 
 	// Initialize Winsock
 	iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -336,43 +346,39 @@ int __cdecl main(void)
 
 					short* delta = (short*)recvbuf;
 
-					INPUT input;
-					input.type = INPUT_MOUSE;
-					input.mi.dx = (short)ntohs(delta[0]);
-					input.mi.dy = (short)ntohs(delta[1]);
-					input.mi.mouseData = 0;
-					input.mi.dwFlags = MOUSEEVENTF_MOVE;
-					input.mi.time = 0;
-
-					SendInput(1, &input, sizeof(input));
+					mouseInput.mi.dx = (short)ntohs(delta[0]);
+					mouseInput.mi.dy = (short)ntohs(delta[1]);
+					mouseInput.mi.dwFlags = MOUSEEVENTF_MOVE;
+					SendInput(1, &mouseInput, sizeof(mouseInput));
+					// No reset for dx,dy seems to be ok for other mouse events.
 					break; }
 				case Msg::MouseLeftClick: {
-					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
-					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+					mouseInput.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+					SendInput(1, &mouseInput, sizeof(mouseInput));
+					mouseInput.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+					SendInput(1, &mouseInput, sizeof(mouseInput));
 					break; }
 				case Msg::MouseLeftDown: {
-					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+					mouseInput.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+					SendInput(1, &mouseInput, sizeof(mouseInput));
 					break; }
 				case Msg::MouseLeftUp: {
-					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+					mouseInput.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+					SendInput(1, &mouseInput, sizeof(mouseInput));
 					break; }
 				case Msg::MouseRightClick: {
-					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
-					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
-					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_RIGHTUP;
-					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+					mouseInput.mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+					SendInput(1, &mouseInput, sizeof(mouseInput));
+					mouseInput.mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+					SendInput(1, &mouseInput, sizeof(mouseInput));
 					break; }
 				case Msg::MouseRightDown: {
-					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
-					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+					mouseInput.mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+					SendInput(1, &mouseInput, sizeof(mouseInput));
 					break; }
 				case Msg::MouseRightUp: {
-					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_RIGHTUP;
-					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+					mouseInput.mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+					SendInput(1, &mouseInput, sizeof(mouseInput));
 					break; }
 				case Msg::MouseWheel: {
 					iResult = recv(ClientSocket, recvbuf, 4, MSG_WAITALL);
@@ -381,15 +387,80 @@ int __cdecl main(void)
 						break;
 					}
 
-					mouseButtonInput.mi.dwFlags = MOUSEEVENTF_WHEEL;
-					mouseButtonInput.mi.mouseData = ntohl(*(int*)recvbuf);
-					SendInput(1, &mouseButtonInput, sizeof(mouseButtonInput));
+					mouseInput.mi.dwFlags = MOUSEEVENTF_WHEEL;
+					mouseInput.mi.mouseData = ntohl(*(int*)recvbuf);
+					SendInput(1, &mouseInput, sizeof(mouseInput));
 
-					// I borrow this variable 'mouseButtonInput' just for speed.
-					// Set to 0 for this variable is actually defined for mouse button input events.
-					mouseButtonInput.mi.mouseData = 0;
+					// The document says it should be 0 for non-wheel or X-button mouse events.
+					//   https://docs.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-mouseinput#members
+					// But for now its actually working fine without a reset.
+					// mouseInput.mi.mouseData = 0;
 					break; }
-				case Msg::PasteText: {
+				case Msg::InputText: {
+					iResult = recv(ClientSocket, recvbuf, 6, MSG_WAITALL);
+					if (iResult != 6) {
+						iResult = 0;
+						break;
+					}
+
+					int textByteLen = ntohl(*(int*)recvbuf);
+					char inputTextMode = recvbuf[4];
+					bool hold = recvbuf[5];
+
+
+					HANDLE textMemHandle = GlobalAlloc(GMEM_MOVEABLE, textByteLen + 2);
+					if (textMemHandle == NULL)
+					{
+						iResult = 0;// Close connection
+						break;
+					}
+					// Lock the handle and copy the text to the buffer. 
+					char16_t* wstr = (char16_t*)GlobalLock(textMemHandle);
+					iResult = recv(ClientSocket, (char*)wstr, textByteLen, MSG_WAITALL);
+					if (iResult != textByteLen) {
+						iResult = 0;
+						GlobalFree(textMemHandle);// This can free a locked memory.
+						break;
+					}
+					wstr[textByteLen >> 1] = 0; // null character 
+					GlobalUnlock(textMemHandle);
+
+					int result;
+					result = OpenClipboard(window);
+					if (result == 0) {
+						GlobalFree(textMemHandle);
+						break;
+					}
+					result = EmptyClipboard();
+					if (result == 0) {
+						CloseClipboard();
+						GlobalFree(textMemHandle);
+						break;
+					}
+					HANDLE hResult;
+					hResult = SetClipboardData(CF_UNICODETEXT, textMemHandle);
+					if (hResult == NULL) {
+						CloseClipboard();
+						GlobalFree(textMemHandle);
+						break;
+					}
+					CloseClipboard();
+
+					INPUT input;
+					input.type = INPUT_KEYBOARD;
+					input.ki.dwFlags = KEYEVENTF_SCANCODE;
+					input.ki.time = 0;
+
+					input.ki.wScan = SCS1::L_CTRL;
+					SendInput(1, &input, sizeof(input));
+					input.ki.wScan = SCS1::V;
+					SendInput(1, &input, sizeof(input));
+
+					input.ki.dwFlags |= KEYEVENTF_KEYUP;
+					input.ki.wScan = SCS1::L_CTRL;
+					SendInput(1, &input, sizeof(input));
+					input.ki.wScan = SCS1::V;
+					SendInput(1, &input, sizeof(input));
 					break; }
 				default: {
 					iResult = 0;

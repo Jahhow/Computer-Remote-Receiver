@@ -3,8 +3,15 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+
+#include <bluetoothapis.h>
+#include <bthdef.h>
+#include <bthsdpdef.h>
+#include <ws2bth.h>
+#include <cguid.h>
 #include <stdlib.h>
 #include <stdio.h>
+
 #include "SCS1.h"
 
 // Need to link with Ws2_32.lib
@@ -53,7 +60,7 @@ public:
 };
 
 u_short boundPort;
-bool connected = false;
+bool connectedAndVerified = false;
 HANDLE eventConnected;
 
 DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
@@ -70,7 +77,7 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 	hints.ai_flags = AI_PASSIVE;
 
 	while (1) {
-		if (connected) {
+		if (connectedAndVerified) {
 			system("cls");
 			puts("\n  Connected.");
 			iResult = SuspendThread(GetCurrentThread());
@@ -139,70 +146,8 @@ DWORD WINAPI RepeatKeyStrokeThread(LPVOID lpParam) {
 	}
 }
 
-void ShowLastErrorMessage(DWORD errCode, LPCTSTR errTitle)
-{
-	LPTSTR errorText = NULL;
-
-	FormatMessage(
-		FORMAT_MESSAGE_FROM_SYSTEM |
-		FORMAT_MESSAGE_ALLOCATE_BUFFER |
-		FORMAT_MESSAGE_IGNORE_INSERTS,
-		NULL,
-		errCode,
-		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-		(LPTSTR)&errorText,
-		0,
-		NULL);
-
-	if (NULL != errorText)
-	{
-		wprintf(TEXT("%s:\nError Code: %u\n%s\n"), errTitle, errCode, errorText);
-
-		LocalFree(errorText);
-		errorText = NULL;
-	}
-}
-
-BOOL SetWinSta0Desktop()
-{
-	BOOL bSuccess;
-
-	HWINSTA hWinSta0 = OpenWindowStation(TEXT("WinSta0"), FALSE, MAXIMUM_ALLOWED);
-	if (NULL == hWinSta0) {
-		ShowLastErrorMessage(GetLastError(), TEXT("OpenWindowStation"));
-		return FALSE;
-	}
-
-	bSuccess = SetProcessWindowStation(hWinSta0);
-	if (!bSuccess) {
-		ShowLastErrorMessage(GetLastError(), TEXT("SetProcessWindowStation"));
-		return FALSE;
-	}
-
-	HDESK hDesk = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
-	if (NULL == hDesk) {
-		ShowLastErrorMessage(GetLastError(), TEXT("OpenDesktop"));
-		return FALSE;
-	}
-
-	bSuccess = SetThreadDesktop(hDesk);
-	if (!bSuccess) {
-		CloseDesktop(hDesk);
-		ShowLastErrorMessage(GetLastError(), TEXT("SetThreadDesktop"));
-		return FALSE;
-	}
-
-	CloseDesktop(hDesk);
-	CloseWindowStation(hWinSta0);
-	return TRUE;
-}
-
 int main()
 {
-	//if (!SetWinSta0Desktop()) {
-	//	Sleep(2000);
-	//	return 1;
-	//}
 	DWORD prev_mode;
 	HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
 	HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -216,7 +161,6 @@ int main()
 	SetConsoleMode(hIn, ENABLE_EXTENDED_FLAGS | (prev_mode & ~ENABLE_QUICK_EDIT_MODE));
 	SetConsoleCursorInfo(hOut, &cursorInfo);
 
-
 	if (scanCodeArray == NULL || scanCodeArrayMutex == NULL) {
 		return 1;
 	}
@@ -226,6 +170,10 @@ int main()
 
 	SOCKET ListenSocket = INVALID_SOCKET;
 	SOCKET ClientSocket = INVALID_SOCKET;
+	SOCKET btSocket = INVALID_SOCKET;
+
+	HANDLE handleIpPortPrintingThread;
+	HANDLE handleRepeatKeyStrokeThread;
 
 	int iSendResult;
 	char recvbuf[DEFAULT_BUFLEN];
@@ -287,10 +235,20 @@ int main()
 	iResult = listen(ListenSocket, 2);
 	if (iResult == SOCKET_ERROR) {
 		printf("listen failed with error: %d\n", WSAGetLastError());
-		closesocket(ListenSocket);
-		WSACleanup();
-		return 1;
+		goto CleanupExit;
 	}
+
+	btSocket = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
+	if (btSocket == INVALID_SOCKET) {
+		goto CleanupExit;
+	}
+
+	SOCKADDR_BTH name;
+	name.addressFamily = AF_BTH;
+	name.btAddr = 0;
+	name.serviceClassId = GUID_NULL;
+	name.port = BT_PORT_ANY;
+	iResult = bind(btSocket, (sockaddr*)&name, sizeof(name));
 
 	eventConnected = CreateEvent(0, false, 0, NULL);
 	if (eventConnected == NULL) {
@@ -299,7 +257,7 @@ int main()
 		return 1;
 	}
 
-	HANDLE handleIpPortPrintingThread = CreateThread(
+	handleIpPortPrintingThread = CreateThread(
 		NULL,                   // default security attributes
 		0,                      // use default stack size  
 		IpPortPrintingThread,   // thread function name
@@ -314,7 +272,7 @@ int main()
 		return 1;
 	}
 
-	HANDLE handleRepeatKeyStrokeThread = CreateThread(
+	handleRepeatKeyStrokeThread = CreateThread(
 		NULL,                   // default security attributes
 		0,                      // use default stack size  
 		RepeatKeyStrokeThread,  // thread function name
@@ -334,28 +292,25 @@ int main()
 		ClientSocket = accept(ListenSocket, NULL, NULL);
 		if (ClientSocket == INVALID_SOCKET) {
 			printf("accept failed with error: %d\n", WSAGetLastError());
-			break;
+			goto CleanupExit;
 		}
 
 		iSendResult = send(ClientSocket, (const char*)&serverHeader, sizeof(serverHeader), 0);
 		if (iSendResult == SOCKET_ERROR) {
 			printf("send failed with error: %d\n", WSAGetLastError());
-			closesocket(ClientSocket);
-			continue;
+			goto CloseClient;
 		}
 
 		iResult = recv(ClientSocket, recvbuf, 4, MSG_WAITALL);
 		if (iResult != 4) {
-			closesocket(ClientSocket);
-			continue;
+			goto CloseClient;
 		}
 
-		connected = true;
+		connectedAndVerified = true;
 		iResult = SetEvent(eventConnected);
 		if (iResult == 0) {
 			printf("SetEvent(eventConnected) failed with error: %d\n", GetLastError());
-			closesocket(ClientSocket);
-			break;
+			goto CleanupExit;
 		}
 
 		// Receive until the peer shuts down the connection
@@ -368,8 +323,7 @@ int main()
 				case Msg::KeyboardScanCode: {
 					iResult = recv(ClientSocket, recvbuf, 3, MSG_WAITALL);
 					if (iResult != 3) {
-						iResult = 0;
-						break;
+						goto CloseClient;
 					}
 
 					u_short scanCode = ntohs(*(u_short*)recvbuf);
@@ -411,8 +365,7 @@ int main()
 				case Msg::KeyboardScanCodeCombination: {
 					iResult = recv(ClientSocket, recvbuf, 2, MSG_WAITALL);
 					if (iResult != 2) {
-						iResult = 0;
-						break;
+						goto CloseClient;
 					}
 
 					char buttonAction = recvbuf[0];
@@ -420,8 +373,7 @@ int main()
 
 					iResult = recv(ClientSocket, recvbuf, scanCodeByteLen, MSG_WAITALL);
 					if (iResult != scanCodeByteLen) {
-						iResult = 0;
-						break;
+						goto CloseClient;
 					}
 
 					INPUT input;
@@ -455,8 +407,7 @@ int main()
 						if (numScanCodes > scanCodeArraySize) {
 							void* newScanCodeArray = realloc(scanCodeArray, scanCodeByteLen);
 							if (newScanCodeArray == NULL) {
-								iResult = 0;
-								break;
+								goto CloseClient;
 							}
 							scanCodeArraySize = numScanCodes;
 							scanCodeArray = (short*)newScanCodeArray;
@@ -487,8 +438,7 @@ int main()
 				case Msg::MoveMouse: {
 					iResult = recv(ClientSocket, recvbuf, 4, MSG_WAITALL);
 					if (iResult != 4) {
-						iResult = 0;
-						break;
+						goto CloseClient;
 					}
 
 					short* delta = (short*)recvbuf;
@@ -530,8 +480,7 @@ int main()
 				case Msg::MouseWheel: {
 					iResult = recv(ClientSocket, recvbuf, 4, MSG_WAITALL);
 					if (iResult != 4) {
-						iResult = 0;
-						break;
+						goto CloseClient;
 					}
 
 					mouseInput.mi.dwFlags = MOUSEEVENTF_WHEEL;
@@ -546,8 +495,7 @@ int main()
 				case Msg::InputText: {
 					iResult = recv(ClientSocket, recvbuf, 6, MSG_WAITALL);
 					if (iResult != 6) {
-						iResult = 0;
-						break;
+						goto CloseClient;
 					}
 
 					int textByteLen = ntohl(*(int*)recvbuf);
@@ -556,23 +504,19 @@ int main()
 					bool hold = recvbuf[5];
 
 					HANDLE textMemHandle = GlobalAlloc(GMEM_MOVEABLE, textByteLen + 2);
-					if (textMemHandle == NULL)
-					{
-						iResult = 0;// Close connection
-						break;
+					if (textMemHandle == NULL) {
+						goto CloseClient;
 					}
 					// Lock the handle and copy the text to the buffer. 
 					char16_t* wstr = (char16_t*)GlobalLock(textMemHandle);
 					if (wstr == NULL) {
-						iResult = 0;
 						GlobalFree(textMemHandle);
-						break;
+						goto CloseClient;
 					}
 					iResult = recv(ClientSocket, (char*)wstr, textByteLen, MSG_WAITALL);
 					if (iResult != textByteLen) {
-						iResult = 0;
 						GlobalFree(textMemHandle); // This can free a locked memory.
-						break;
+						goto CloseClient;
 					}
 					switch (inputTextMode)
 					{
@@ -641,42 +585,33 @@ int main()
 						}
 						break; }
 					default:
-						iResult = 0;
-						break;
+						goto CloseClient;
 					}
 					break; }
 				default: {
-					iResult = 0;
-					break; }
+					goto CloseClient;
+				}
 				}
 			}
 			else if (iResult < 0) {
 				printf("recv failed with error: %d\n", WSAGetLastError());
-				closesocket(ListenSocket);
-				closesocket(ClientSocket);
-				WSACleanup();
-				ExitProcess(1);
+				goto CleanupExit;
 			}
-
 		} while (iResult > 0);
 
-		// shutdown the 'send' connection since we're done
-		/*iResult = shutdown(ClientSocket, SD_SEND);
-		if (iResult == SOCKET_ERROR) {
-			printf("shutdown failed with error: %d\n", WSAGetLastError());
-			closesocket(ClientSocket);
-			break;
-		}*/
-
-		// cleanup
+	CloseClient:
 		closesocket(ClientSocket);
-		connected = false;
-		ResetEvent(eventConnected);
-		ResumeThread(handleIpPortPrintingThread);
+		if (connectedAndVerified) {
+			connectedAndVerified = false;
+			ResetEvent(eventConnected);
+			ResumeThread(handleIpPortPrintingThread);
+		}
 	}
 
-	// No longer need server socket
-	closesocket(ListenSocket);
+CleanupExit:
+	if (ListenSocket != INVALID_SOCKET) closesocket(ListenSocket);
+	if (ClientSocket != INVALID_SOCKET) closesocket(ListenSocket);
+	if (btSocket != INVALID_SOCKET) closesocket(btSocket);
 	WSACleanup();
-	ExitProcess(1);
+	ExitProcess(0);
 }

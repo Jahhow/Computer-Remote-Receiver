@@ -163,35 +163,46 @@ void ShowLastErrorMessage(DWORD errCode, LPCTSTR errTitle)
 	}
 }
 
-BOOL SetWinSta0Desktop(LPCTSTR szDesktopName)
+BOOL SetWinSta0Desktop()
 {
-	BOOL bSuccess = FALSE;
+	BOOL bSuccess;
 
 	HWINSTA hWinSta0 = OpenWindowStation(TEXT("WinSta0"), FALSE, MAXIMUM_ALLOWED);
-	if (NULL == hWinSta0) { ShowLastErrorMessage(GetLastError(), TEXT("OpenWindowStation")); }
+	if (NULL == hWinSta0) {
+		ShowLastErrorMessage(GetLastError(), TEXT("OpenWindowStation"));
+		return FALSE;
+	}
 
 	bSuccess = SetProcessWindowStation(hWinSta0);
-	if (!bSuccess) { ShowLastErrorMessage(GetLastError(), TEXT("SetProcessWindowStation")); }
+	if (!bSuccess) {
+		ShowLastErrorMessage(GetLastError(), TEXT("SetProcessWindowStation"));
+		return FALSE;
+	}
 
-	HDESK hDesk = OpenDesktop(szDesktopName, 0, FALSE, MAXIMUM_ALLOWED);
-	if (NULL == hDesk) { ShowLastErrorMessage(GetLastError(), TEXT("OpenDesktop")); }
+	HDESK hDesk = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
+	if (NULL == hDesk) {
+		ShowLastErrorMessage(GetLastError(), TEXT("OpenDesktop"));
+		return FALSE;
+	}
 
 	bSuccess = SetThreadDesktop(hDesk);
-	if (!bSuccess) { ShowLastErrorMessage(GetLastError(), TEXT("SetThreadDesktop")); }
+	if (!bSuccess) {
+		CloseDesktop(hDesk);
+		ShowLastErrorMessage(GetLastError(), TEXT("SetThreadDesktop"));
+		return FALSE;
+	}
 
-	if (hDesk != NULL) { CloseDesktop(hDesk); }
-	if (hWinSta0 != NULL) { CloseWindowStation(hWinSta0); }
-	return bSuccess;
+	CloseDesktop(hDesk);
+	CloseWindowStation(hWinSta0);
+	return TRUE;
 }
 
-//int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
-//	PSTR lpCmdLine, INT nCmdShow)
 int main()
 {
-	/*if (!SetWinSta0Desktop(TEXT("winlogon"))) {
-		system("pause");
-		return 1;
-	}*/
+	//if (!SetWinSta0Desktop()) {
+	//	Sleep(2000);
+	//	return 1;
+	//}
 	DWORD prev_mode;
 	HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
 	HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);

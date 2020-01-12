@@ -3,20 +3,16 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-
 #include <bluetoothapis.h>
 #include <bthdef.h>
 #include <bthsdpdef.h>
 #include <ws2bth.h>
-#include <cguid.h>
 #include <stdlib.h>
 #include <stdio.h>
-
 #include "SCS1.h"
 
-// Need to link with Ws2_32.lib
 #pragma comment (lib, "Ws2_32.lib")
-// #pragma comment (lib, "Mswsock.lib")
+#pragma comment (lib, "Bthprops.lib")
 
 #define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT 1597
@@ -238,17 +234,38 @@ int main()
 		goto CleanupExit;
 	}
 
+	if (!BluetoothEnableIncomingConnections(NULL, TRUE)) {
+		puts("BluetoothEnableIncomingConnections failed.");
+		goto CleanupExit;
+	}
+	if (!BluetoothEnableDiscovery(NULL, TRUE)) {
+		puts("BluetoothEnableDiscovery failed.");
+		goto CleanupExit;
+	}
+
 	btSocket = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
 	if (btSocket == INVALID_SOCKET) {
 		goto CleanupExit;
 	}
 
-	SOCKADDR_BTH name;
-	name.addressFamily = AF_BTH;
-	name.btAddr = 0;
-	name.serviceClassId = GUID_NULL;
-	name.port = BT_PORT_ANY;
-	iResult = bind(btSocket, (sockaddr*)&name, sizeof(name));
+	SOCKADDR_BTH saBT;
+	saBT.addressFamily = AF_BTH;
+	saBT.btAddr = 0;
+	*(u_int64*)&(saBT.serviceClassId.Data1) = htonll(0xC937E0B78C64C221);
+	*(u_int64*)saBT.serviceClassId.Data4 = htonll(0x4A25F40120B3064E);
+	saBT.port = BT_PORT_ANY;
+
+	iResult = bind(btSocket, (sockaddr*)&saBT, sizeof(saBT));
+	if (iResult == SOCKET_ERROR) {
+		printf("bind(btSocket) failed with error: %d\n", WSAGetLastError());
+		goto CleanupExit;
+	}
+
+	iResult = listen(btSocket, 1);
+	if (iResult == SOCKET_ERROR) {
+		printf("listen(btSocket) failed with error: %d\n", WSAGetLastError());
+		goto CleanupExit;
+	}
 
 	eventConnected = CreateEvent(0, false, 0, NULL);
 	if (eventConnected == NULL) {

@@ -234,7 +234,7 @@ int main()
 		goto CleanupExit;
 	}
 
-	if (!BluetoothEnableIncomingConnections(NULL, TRUE)) {
+	/*if (!BluetoothEnableIncomingConnections(NULL, TRUE)) {
 		puts("BluetoothEnableIncomingConnections failed.");
 		goto CleanupExit;
 	}
@@ -265,7 +265,7 @@ int main()
 	if (iResult == SOCKET_ERROR) {
 		printf("listen(btSocket) failed with error: %d\n", WSAGetLastError());
 		goto CleanupExit;
-	}
+	}*/
 
 	eventConnected = CreateEvent(0, false, 0, NULL);
 	if (eventConnected == NULL) {

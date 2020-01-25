@@ -9,6 +9,8 @@
 #include <ws2bth.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <cguid.h>
+#include <objbase.h>
 #include "SCS1.h"
 
 #pragma comment (lib, "Ws2_32.lib")
@@ -141,7 +143,117 @@ DWORD WINAPI RepeatKeyStrokeThread(LPVOID lpParam) {
 		Sleep(30);
 	}
 }
+#define SDP_RECORD_SIZE   0x0000004f
 
+#define SDP_CHANNEL_OFFSET 32
+
+
+
+struct
+
+{
+
+	BTHNS_SETBLOB   b;
+
+	unsigned char   uca[SDP_RECORD_SIZE];
+
+} bigBlob;
+
+
+
+BOOL BT_SetService()
+
+{
+
+	ULONG recordHandle = 0;
+
+	ULONG ulSdpVersion = BTH_SDP_VERSION;
+
+	BLOB blob;
+
+	WSAQUERYSET Service;
+
+
+
+	// Bluetooth device profile record sample
+
+	BYTE rgbSdpRecord[] = {
+
+		  0x35, 0x4d, 0x09, 0x00, 0x01, 0x35, 0x11, 0x1c,
+
+		  0x29, 0xf9, 0xc0, 0xfd, 0xbb, 0x6e, 0x47, 0x97,
+
+		  0x9f, 0xa9, 0x3e, 0xc9, 0xa8, 0x54, 0x29, 0x0c,
+
+		  0x09, 0x00, 0x04, 0x35, 0x0c, 0x35, 0x03, 0x19,
+
+		  0x01, 0x00, 0x35, 0x05, 0x19, 0x00, 0x03, 0x08,
+
+		  0x1a, 0x09, 0x00, 0x06, 0x35, 0x09, 0x09, 0x65,
+
+		  0x6e, 0x09, 0x00, 0x6a, 0x09, 0x01, 0x00, 0x09,
+
+		  0x00, 0x09, 0x35, 0x08, 0x35, 0x06, 0x19, 0x11,
+
+		  0x05, 0x09, 0x01, 0x00, 0x09, 0x01, 0x00, 0x25,
+
+		  0x06, 0x53, 0x65, 0x72, 0x69, 0x61, 0x6c
+
+	};
+
+
+
+	bigBlob.b.pRecordHandle = (HANDLE*)&recordHandle;
+
+	bigBlob.b.pSdpVersion = &ulSdpVersion;
+
+	// bigBlob.b.fSecurity       = 0;
+
+	// bigBlob.b.fOptions        = 0;
+
+	bigBlob.b.ulRecordLength = SDP_RECORD_SIZE;
+
+	memcpy(bigBlob.b.pRecord, rgbSdpRecord, SDP_RECORD_SIZE);
+
+
+
+	blob.cbSize = sizeof(BTHNS_SETBLOB) + SDP_RECORD_SIZE - 1;
+
+	blob.pBlobData = (PBYTE)&bigBlob;
+
+
+
+	memset(&Service, 0, sizeof(Service));
+
+	Service.dwSize = sizeof(Service);
+
+	Service.lpBlob = &blob;
+
+	Service.dwNameSpace = NS_BTH;
+
+
+
+	if (WSASetService(&Service, RNRSERVICE_REGISTER, 0) == SOCKET_ERROR)
+
+	{
+
+		printf("WSASetService() failed with error code %d\n", WSAGetLastError());
+
+		return FALSE;
+
+	}
+
+	else
+
+	{
+
+		printf("WSASetService() is working!\n");
+
+		return TRUE;
+
+	}
+
+}
 int main()
 {
 	DWORD prev_mode;
@@ -167,6 +279,11 @@ int main()
 	SOCKET ListenSocket = INVALID_SOCKET;
 	SOCKET ClientSocket = INVALID_SOCKET;
 	SOCKET btSocket = INVALID_SOCKET;
+
+	TCHAR serviceName[] = TEXT("Remote Control Receiver");
+	GUID guid;
+	WSAQUERYSET qsRegInfo;
+	int saBTsize = sizeof(SOCKADDR_BTH);
 
 	HANDLE handleIpPortPrintingThread;
 	HANDLE handleRepeatKeyStrokeThread;
@@ -234,7 +351,7 @@ int main()
 		goto CleanupExit;
 	}
 
-	/*if (!BluetoothEnableIncomingConnections(NULL, TRUE)) {
+	if (!BluetoothEnableIncomingConnections(NULL, TRUE)) {
 		puts("BluetoothEnableIncomingConnections failed.");
 		goto CleanupExit;
 	}
@@ -251,8 +368,7 @@ int main()
 	SOCKADDR_BTH saBT;
 	saBT.addressFamily = AF_BTH;
 	saBT.btAddr = 0;
-	*(u_int64*)&(saBT.serviceClassId.Data1) = htonll(0xC937E0B78C64C221);
-	*(u_int64*)saBT.serviceClassId.Data4 = htonll(0x4A25F40120B3064E);
+	saBT.serviceClassId = GUID_NULL;
 	saBT.port = BT_PORT_ANY;
 
 	iResult = bind(btSocket, (sockaddr*)&saBT, sizeof(saBT));
@@ -265,7 +381,36 @@ int main()
 	if (iResult == SOCKET_ERROR) {
 		printf("listen(btSocket) failed with error: %d\n", WSAGetLastError());
 		goto CleanupExit;
-	}*/
+	}
+
+	iResult = getsockname(btSocket, (sockaddr*)&saBT, &saBTsize);
+	if (iResult == SOCKET_ERROR) {
+		printf("getsockname(btSocket) failed with error: %d\n", WSAGetLastError());
+		goto CleanupExit;
+	}
+
+	CSADDR_INFO sockinfo;
+	sockinfo.iProtocol = BTHPROTO_RFCOMM;
+	sockinfo.iSocketType = SOCK_STREAM;
+	sockinfo.LocalAddr = { (LPSOCKADDR)&saBT,sizeof(saBT) };
+	sockinfo.RemoteAddr = { (LPSOCKADDR)&saBT,sizeof(saBT) };
+
+	CLSIDFromString(TEXT("{C937E0B7-8C64-C221-4A25-F40120B3064E}"), &guid);
+
+	ZeroMemory(&qsRegInfo, sizeof(WSAQUERYSET));
+	qsRegInfo.dwSize = sizeof(WSAQUERYSET);
+	qsRegInfo.lpszServiceInstanceName = serviceName;
+	qsRegInfo.lpServiceClassId = &guid;
+	qsRegInfo.dwNameSpace = NS_BTH;
+	qsRegInfo.dwNumberOfCsAddrs = 1;
+	qsRegInfo.lpcsaBuffer = &sockinfo;
+
+	iResult = WSASetService(&qsRegInfo, RNRSERVICE_REGISTER, 0);
+	if (iResult == SOCKET_ERROR) {
+		printf("WSASetService failed with error: %d\n", WSAGetLastError());
+		goto CleanupExit;
+	}
+	//BT_SetService();
 
 	eventConnected = CreateEvent(0, false, 0, NULL);
 	if (eventConnected == NULL) {
@@ -306,11 +451,12 @@ int main()
 
 	while (1) {
 		// Accept a client socket
-		ClientSocket = accept(ListenSocket, NULL, NULL);
+		ClientSocket = accept(btSocket, NULL, NULL);
 		if (ClientSocket == INVALID_SOCKET) {
 			printf("accept failed with error: %d\n", WSAGetLastError());
 			goto CleanupExit;
 		}
+		printf("accepted\n");
 
 		iSendResult = send(ClientSocket, (const char*)&serverHeader, sizeof(serverHeader), 0);
 		if (iSendResult == SOCKET_ERROR) {

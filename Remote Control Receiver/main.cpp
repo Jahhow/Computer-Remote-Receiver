@@ -11,8 +11,10 @@
 #include <stdio.h>
 #include <cguid.h>
 #include <objbase.h>
+#include <Wininet.h>
 #include "SCS1.h"
 
+#pragma comment (lib, "Wininet.lib")
 #pragma comment (lib, "Ws2_32.lib")
 #pragma comment (lib, "Bthprops.lib")
 
@@ -20,10 +22,11 @@
 #define DEFAULT_PORT 1597
 #define DEFAULT_PORT_STR "1597"
 
+char ClientHeader[] = { 'R', 'C', 'R', 'H' };
 struct ServerHeader
 {
 	char Password[4] = { 'U', 'E', 'R', 'J' };
-	int Version = htonl(1);
+	int Version = htonl(2);
 } serverHeader;
 
 class Msg {
@@ -64,6 +67,91 @@ bool bluetoothReady = false;
 HANDLE eventConnected;
 BLUETOOTH_RADIO_INFO radioInfo;
 
+BLUETOOTH_RADIO_INFO previousRadioInfo = {};
+addrinfo* previousResult = NULL;
+bool prevBluetoothReady = false;
+bool hasInternetConnected = false;
+BOOL ServerInfoUpdated(addrinfo* result) {
+	bool ret;
+	addrinfo* pai = previousResult;
+	addrinfo* ai = result;
+	DWORD internetFlags;
+	bool newHasInternetConnected = InternetGetConnectedState(&internetFlags, 0);
+	if (newHasInternetConnected != hasInternetConnected) {
+		ret = true;
+		goto Return;
+	}
+	if (prevBluetoothReady != bluetoothReady) {
+		ret = true;
+		goto Return;
+	}
+	if (previousRadioInfo.address.ullLong != radioInfo.address.ullLong) {
+		ret = true;
+		goto Return;
+	}
+
+	while (1) {
+		if ((ai == NULL) != (pai == NULL)) {
+			ret = true;
+			goto Return;
+		}
+		if (ai == NULL)
+			break;
+		if (memcmp(ai->ai_addr, pai->ai_addr, ai->ai_addrlen)) {
+			ret = true;
+			goto Return;
+		}
+		ai = ai->ai_next;
+		pai = pai->ai_next;
+	}
+	ret = false;
+
+Return:
+	freeaddrinfo(previousResult);
+	previousResult = result;
+	hasInternetConnected = newHasInternetConnected;
+	prevBluetoothReady = bluetoothReady;
+	previousRadioInfo = radioInfo;
+	return ret;
+}
+
+void MyExitProcess();
+
+void cls()
+{
+	// Get the Win32 handle representing standard output.
+	// This generally only has to be done once, so we make it static.
+	static const HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+
+	CONSOLE_SCREEN_BUFFER_INFO csbi;
+	COORD topLeft = { 0, 0 };
+
+	// std::cout uses a buffer to batch writes to the underlying console.
+	// We need to flush that to the console because we're circumventing
+	// std::cout entirely; after we clear the console, we don't want
+	// stale buffered text to randomly be written out.
+	fflush(stdout);
+
+	// Figure out the current width and height of the console window
+	if (!GetConsoleScreenBufferInfo(hOut, &csbi)) {
+		// TODO: Handle failure!
+		abort();
+	}
+	DWORD length = csbi.dwSize.X * csbi.dwSize.Y;
+
+	DWORD written;
+
+	// Flood-fill the console with spaces to clear it
+	FillConsoleOutputCharacter(hOut, TEXT(' '), length, topLeft, &written);
+
+	// Reset the attributes of every character to the default.
+	// This clears all background colour formatting, if any.
+	//FillConsoleOutputAttribute(hOut, csbi.wAttributes, length, topLeft, &written);
+
+	// Move the cursor back to the top left for the next sequence of writes
+	SetConsoleCursorPosition(hOut, topLeft);
+}
+
 DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 	int iResult;
 	addrinfo* result = NULL;
@@ -79,57 +167,62 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 
 	while (1) {
 		if (connectedAndVerified) {
-			system("cls");
+			cls();
 			puts("\n  Connected.");
 			iResult = SuspendThread(GetCurrentThread());
 			if (iResult == -1) {
 				printf("SuspendThread failed with error:%d\n", GetLastError());
-				WSACleanup();
-				ExitProcess(1);
+				MyExitProcess();
 			}
+			goto UpdateServerInfo;
 		}
 		else {
 			// Resolve the server address and port
 			iResult = getaddrinfo("", DEFAULT_PORT_STR, &hints, &result);
 			if (iResult != 0) {
 				printf("getaddrinfo failed with error:%d\n", iResult);
-				WSACleanup();
-				ExitProcess(1);
+				MyExitProcess();
 			}
-
-			system("cls");
-			if (bluetoothReady)
-				wprintf(
-					L"\n"
-					"  Bluetooth:\n\n"
-					"    %s\n"
-					"    %02X:%02X:%02X:%02X:%02X:%02X\n\n",
-					radioInfo.szName,
-					radioInfo.address.rgBytes[0],
-					radioInfo.address.rgBytes[1],
-					radioInfo.address.rgBytes[2],
-					radioInfo.address.rgBytes[3],
-					radioInfo.address.rgBytes[4],
-					radioInfo.address.rgBytes[5]);
-			puts(
-				"\n"
-				"  Internet:\n"
-				"\n"
-				"    [IP]");
-			char ipv4str[16];
-			addrinfo* ai = result;
-			u_int i = 1;
-			while (ai) {
-				inet_ntop(ai->ai_family, &((sockaddr_in*)ai->ai_addr)->sin_addr, ipv4str, 16);
-				printf("         (%u)  %s\n", i, ipv4str);
-				ai = ai->ai_next;
-				++i;
+			if (ServerInfoUpdated(result)) {
+			UpdateServerInfo:
+				cls();
+				if (bluetoothReady)
+					wprintf(
+						L"\n"
+						"  Bluetooth:\n\n"
+						"    %s\n"
+						"    %02X:%02X:%02X:%02X:%02X:%02X\n\n",
+						radioInfo.szName,
+						radioInfo.address.rgBytes[0],
+						radioInfo.address.rgBytes[1],
+						radioInfo.address.rgBytes[2],
+						radioInfo.address.rgBytes[3],
+						radioInfo.address.rgBytes[4],
+						radioInfo.address.rgBytes[5]);
+				puts(
+					"\n"
+					"  Internet:");
+				if (hasInternetConnected) {
+					puts(
+						"\n"
+						"    [IP]");
+					char ipv4str[16];
+					addrinfo* ai = result;
+					u_int i = 1;
+					while (ai) {
+						inet_ntop(ai->ai_family, &((sockaddr_in*)ai->ai_addr)->sin_addr, ipv4str, 16);
+						printf("         (%u)  %s\n", i, ipv4str);
+						ai = ai->ai_next;
+						++i;
+					}
+					printf(
+						"\n"
+						"    [Port] =      %hu\n", boundPort);
+				}
+				else {
+					puts("\n    You\'re not connected.");
+				}
 			}
-			printf(
-				"\n"
-				"    [Port] =      %hu\n", boundPort);
-			freeaddrinfo(result);
-			//Sleep(1000);
 			WaitForSingleObject(eventConnected, 1000);
 		}
 	}
@@ -177,19 +270,24 @@ void MyExitProcess() {
 	if (ListenSocket != INVALID_SOCKET) closesocket(ListenSocket);
 	if (ClientSocket != INVALID_SOCKET) closesocket(ListenSocket);
 	if (btSocket != INVALID_SOCKET) closesocket(btSocket);
+	freeaddrinfo(previousResult);
 	WSACleanup();
 	ExitProcess(0);
 }
 
+HANDLE mutexClientSocket = CreateMutex(NULL, false, NULL);
 void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 	while (1) {
 		int iResult;
-		ClientSocket = accept(mSocket, NULL, NULL);
-		if (ClientSocket == INVALID_SOCKET) {
-			printf("accept failed with error:%d\n", WSAGetLastError());
-			goto CleanupExit;
+		{
+			SOCKET TempClientSocket = accept(mSocket, NULL, NULL);
+			if (TempClientSocket == INVALID_SOCKET) {
+				printf("accept failed with error:%d\n", WSAGetLastError());
+				goto CleanupExit;
+			}
+			WaitForSingleObject(mutexClientSocket, INFINITE);
+			ClientSocket = TempClientSocket;
 		}
-		printf("accepted\n");
 
 		int iSendResult = send(ClientSocket, (const char*)&serverHeader, sizeof(serverHeader), 0);
 		if (iSendResult == SOCKET_ERROR) {
@@ -198,7 +296,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 		}
 
 		iResult = recv(ClientSocket, recvbuf, 4, MSG_WAITALL);
-		if (iResult != 4) {
+		if (iResult != 4 || memcmp(recvbuf, ClientHeader, sizeof(ClientHeader))) {
 			goto CloseClient;
 		}
 
@@ -497,6 +595,8 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 
 	CloseClient:
 		closesocket(ClientSocket);
+		ClientSocket = NULL;
+		ReleaseMutex(mutexClientSocket);
 		if (connectedAndVerified) {
 			connectedAndVerified = false;
 			ResetEvent(eventConnected);
@@ -621,7 +721,6 @@ int main()
 
 	WSADATA wsaData;
 	int iResult;
-	int iSendResult;
 	mouseInput.type = INPUT_MOUSE;
 
 	// Initialize Winsock

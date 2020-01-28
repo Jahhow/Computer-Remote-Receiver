@@ -233,9 +233,9 @@ int scanCodeArraySize = 8;
 short* scanCodeArray = (short*)malloc(scanCodeArraySize << 1);
 
 // I use 0 to indicates that RepeatKeyStrokeThread is currently not repeating key stroke.
-// Take care of this variable. For the mutex 'scanCodeArrayMutex' relies on this number to work properly.
+// Take care of this variable. For the semaphore 'scanCodeArraySemaphore' relies on this number to work properly.
 int numScanCodesFilled = 0;
-HANDLE scanCodeArrayMutex = CreateMutex(NULL, true, NULL);
+HANDLE scanCodeArraySemaphore = CreateSemaphore(NULL, 1, 2, NULL);
 
 DWORD WINAPI RepeatKeyStrokeThread(LPVOID lpParam) {
 
@@ -245,12 +245,12 @@ DWORD WINAPI RepeatKeyStrokeThread(LPVOID lpParam) {
 	input.ki.time = 0;
 
 	while (1) {
-		WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+		WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
 		for (int i = 0; i < numScanCodesFilled; ++i) {
 			input.ki.wScan = scanCodeArray[i];
 			SendInput(1, &input, sizeof(input));
 		}
-		ReleaseMutex(scanCodeArrayMutex);
+		ReleaseSemaphore(scanCodeArraySemaphore, 1, NULL);
 		Sleep(30);
 	}
 }
@@ -338,22 +338,20 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 						break; }
 					case ButtonAction::Down: {
 						if (numScanCodesFilled != 0)
-							WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+							WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
 						SendInput(1, &input, sizeof(input));
 						scanCodeArray[0] = scanCode;
 						numScanCodesFilled = 1;
-						ReleaseMutex(scanCodeArrayMutex);
+						ReleaseSemaphore(scanCodeArraySemaphore, 1, NULL);
 						break; }
 					case ButtonAction::Up: {
 						if (numScanCodesFilled != 0) {
-							WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+							WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
 							numScanCodesFilled = 0;
 						}
 						input.ki.dwFlags |= KEYEVENTF_KEYUP;
 						SendInput(1, &input, sizeof(input));
 						break; }
-					default:
-						break;
 					}
 					break; }
 				case Msg::KeyboardScanCodeCombination: {
@@ -396,7 +394,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 						break; }
 					case ButtonAction::Down: {
 						if (numScanCodesFilled != 0)
-							WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+							WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
 
 						if (numScanCodes > scanCodeArraySize) {
 							void* newScanCodeArray = realloc(scanCodeArray, scanCodeByteLen);
@@ -412,11 +410,11 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 						}*/
 						memcpy(scanCodeArray, scanCodes, scanCodeByteLen);
 						numScanCodesFilled = numScanCodes;
-						ReleaseMutex(scanCodeArrayMutex);
+						ReleaseSemaphore(scanCodeArraySemaphore, 1, NULL);
 						break; }
 					case ButtonAction::Up: {
 						if (numScanCodesFilled != 0) {
-							WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+							WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
 							numScanCodesFilled = 0;
 						}
 						input.ki.dwFlags |= KEYEVENTF_KEYUP;
@@ -554,11 +552,11 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 
 						if (hold) {
 							if (numScanCodesFilled != 0)
-								WaitForSingleObject(scanCodeArrayMutex, INFINITE);
+								WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
 							scanCodeArray[0] = SCS1::L_CTRL;
 							scanCodeArray[1] = SCS1::V;
 							numScanCodesFilled = 2;
-							ReleaseMutex(scanCodeArrayMutex);
+							ReleaseSemaphore(scanCodeArraySemaphore, 1, NULL);
 						}
 						else {
 							INPUT input;
@@ -610,6 +608,8 @@ CleanupExit:
 }
 
 DWORD WINAPI BluetoothThread(LPVOID ignored) {
+	WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
+
 	int iResult;
 	int saBTsize = sizeof(SOCKADDR_BTH);
 	GUID guid;
@@ -714,8 +714,9 @@ int main()
 	GetConsoleMode(hIn, &prev_mode);
 	SetConsoleMode(hIn, ENABLE_EXTENDED_FLAGS | (prev_mode & ~ENABLE_QUICK_EDIT_MODE));
 	SetConsoleCursorInfo(hOut, &cursorInfo);
+	SetConsoleTitle(TEXT("Remote Control Receiver"));
 
-	if (scanCodeArray == NULL || scanCodeArrayMutex == NULL) {
+	if (scanCodeArray == NULL || scanCodeArraySemaphore == NULL) {
 		return 1;
 	}
 

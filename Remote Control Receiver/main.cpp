@@ -190,8 +190,8 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 					wprintf(
 						L"\n"
 						"  Bluetooth:\n\n"
-						"    %s\n"
-						"    %02X:%02X:%02X:%02X:%02X:%02X\n\n",
+						"    Jahhow\'s Laptop\n"
+						"    0E:36:93:68:F3:A5\n\n",
 						radioInfo.szName,
 						radioInfo.address.rgBytes[0],
 						radioInfo.address.rgBytes[1],

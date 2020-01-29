@@ -199,6 +199,13 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 						radioInfo.address.rgBytes[3],
 						radioInfo.address.rgBytes[4],
 						radioInfo.address.rgBytes[5]);
+				else
+					puts(
+						"\n"
+						"  Bluetooth:\n\n"
+						"    Bluetooth is disabled\n"
+						"    or isn't supported.\n");
+
 				puts(
 					"\n"
 					"  Internet:");

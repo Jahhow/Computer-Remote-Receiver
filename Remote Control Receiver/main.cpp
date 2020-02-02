@@ -721,7 +721,7 @@ int main()
 	GetConsoleMode(hIn, &prev_mode);
 	SetConsoleMode(hIn, ENABLE_EXTENDED_FLAGS | (prev_mode & ~ENABLE_QUICK_EDIT_MODE));
 	SetConsoleCursorInfo(hOut, &cursorInfo);
-	SetConsoleTitle(TEXT("Remote Control Receiver"));
+	SetConsoleTitle(TEXT("Receiver"));
 
 	if (scanCodeArray == NULL || scanCodeArraySemaphore == NULL) {
 		return 1;

@@ -265,6 +265,7 @@ DWORD WINAPI RepeatKeyStrokeThread(LPVOID lpParam) {
 SOCKET ListenSocket = INVALID_SOCKET;
 SOCKET ClientSocket = INVALID_SOCKET;
 SOCKET btSocket = INVALID_SOCKET;
+SOCKET UdpSocket = INVALID_SOCKET;
 
 char recvbuf[DEFAULT_BUFLEN];
 INPUT mouseInput = {};
@@ -278,6 +279,7 @@ void MyExitProcess() {
 	if (ListenSocket != INVALID_SOCKET) closesocket(ListenSocket);
 	if (ClientSocket != INVALID_SOCKET) closesocket(ListenSocket);
 	if (btSocket != INVALID_SOCKET) closesocket(btSocket);
+	if (UdpSocket != INVALID_SOCKET) closesocket(UdpSocket);
 	freeaddrinfo(previousResult);
 	WSACleanup();
 	ExitProcess(0);
@@ -710,7 +712,52 @@ DWORD WINAPI BluetoothThread(LPVOID ignored) {
 }
 
 DWORD WINAPI BroadcastThread(LPVOID ignored) {
-	return 0;
+	int iResult;
+
+	sockaddr_in RecvAddr;
+	sockaddr_in server_addr;
+
+	char SendBuf[30] = "Hbeangjkahusaek";
+	int BufLen = 30;
+
+	//---------------------------------------------
+	// Create a socket for sending data
+	UdpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (UdpSocket == INVALID_SOCKET) {
+		//wprintf(L"socket failed with error: %ld\n", WSAGetLastError());
+		MyExitProcess();
+	}
+
+	char enable = TRUE;
+	/*SO_BROADCAST: broadcast attribute*/
+	if (setsockopt(UdpSocket, SOL_SOCKET, SO_BROADCAST, &enable, sizeof(enable)) == SOCKET_ERROR) {
+		perror("setsockopt");
+		MyExitProcess();
+	}
+
+	//server_addr.sin_family = AF_INET; /*IPv4*/
+	//server_addr.sin_port = INADDR_ANY; /*All the port*/
+	//server_addr.sin_addr.S_un.S_un_b = { 192,168,0,10 }; /*Broadcast address*/
+
+	//if (bind(UdpSocket, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
+	//	printf("bind error %d", WSAGetLastError());
+	//	MyExitProcess();
+	//}
+
+	RecvAddr.sin_family = AF_INET;
+	RecvAddr.sin_port = htons(DEFAULT_PORT);
+	RecvAddr.sin_addr.S_un.S_un_b = { 192,168,0,255 };     // OK
+	//RecvAddr.sin_addr.S_un.S_un_b = { 192,168,255,255 }; // Not working
+	//RecvAddr.sin_addr.S_un.S_addr = INADDR_BROADCAST;    // Not working
+
+	while (1) {
+		iResult = sendto(UdpSocket, SendBuf, BufLen, 0, (SOCKADDR*)&RecvAddr, sizeof(RecvAddr));
+		if (iResult == SOCKET_ERROR) {
+			//wprintf(L"sendto failed with error: %d\n", WSAGetLastError());
+			MyExitProcess();
+		}
+		Sleep(2000);
+	}
 }
 
 int main()

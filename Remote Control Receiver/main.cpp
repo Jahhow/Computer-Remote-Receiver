@@ -171,7 +171,7 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 			puts("\n  Connected.");
 			iResult = SuspendThread(GetCurrentThread());
 			if (iResult == -1) {
-				printf("SuspendThread failed with error:%d\n", GetLastError());
+				//printf("SuspendThread failed with error:%d\n", GetLastError());
 				MyExitProcess();
 			}
 			goto UpdateServerInfo;
@@ -180,7 +180,7 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 			// Resolve the server address and port
 			iResult = getaddrinfo("", DEFAULT_PORT_STR, &hints, &result);
 			if (iResult != 0) {
-				printf("getaddrinfo failed with error:%d\n", iResult);
+				//printf("getaddrinfo failed with error:%d\n", iResult);
 				MyExitProcess();
 			}
 			if (ServerInfoUpdated(result)) {
@@ -272,6 +272,7 @@ HWND window = GetConsoleWindow();
 HANDLE handleIpPortPrintingThread;
 HANDLE handleRepeatKeyStrokeThread;
 HANDLE handleBluetoothThread;
+HANDLE handleBroadcastThread;
 
 void MyExitProcess() {
 	if (ListenSocket != INVALID_SOCKET) closesocket(ListenSocket);
@@ -289,7 +290,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 		{
 			SOCKET TempClientSocket = accept(mSocket, NULL, NULL);
 			if (TempClientSocket == INVALID_SOCKET) {
-				printf("accept failed with error:%d\n", WSAGetLastError());
+				//printf("accept failed with error:%d\n", WSAGetLastError());
 				goto CleanupExit;
 			}
 			WaitForSingleObject(mutexClientSocket, INFINITE);
@@ -298,7 +299,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 
 		int iSendResult = send(ClientSocket, (const char*)&serverHeader, sizeof(serverHeader), 0);
 		if (iSendResult == SOCKET_ERROR) {
-			printf("send failed with error:%d\n", WSAGetLastError());
+			//printf("send failed with error:%d\n", WSAGetLastError());
 			goto CloseClient;
 		}
 
@@ -310,7 +311,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 		connectedAndVerified = true;
 		iResult = SetEvent(eventConnected);
 		if (iResult == 0) {
-			printf("SetEvent(eventConnected) failed with error:%d\n", GetLastError());
+			//printf("SetEvent(eventConnected) failed with error:%d\n", GetLastError());
 			goto CleanupExit;
 		}
 
@@ -593,7 +594,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 				}
 			}
 			else if (iResult < 0) {
-				printf("recv failed with error:%d\n", WSAGetLastError());
+				//printf("recv failed with error:%d\n", WSAGetLastError());
 				goto CleanupExit;
 			}
 		} while (iResult > 0);
@@ -619,13 +620,14 @@ DWORD WINAPI BluetoothThread(LPVOID ignored) {
 
 	int iResult;
 	int saBTsize = sizeof(SOCKADDR_BTH);
-	GUID guid;
+
+	// {C937E0B7-8C64-C221-4A25-F40120B3064E}
+	unsigned char btServerGuid[16] = { 0xB7,0xE0,0x37,0xC9, 0x64,0x8C, 0x21,0xC2, 0x4A,0x25,0xF4,0x01,0x20,0xB3,0x06,0x4E };
 	WSAQUERYSET qsRegInfo;
 	BLUETOOTH_FIND_RADIO_PARAMS params = { sizeof(params) };
 	HANDLE radio;
 
 	radioInfo.dwSize = sizeof(radioInfo);
-	CLSIDFromString(TEXT("{C937E0B7-8C64-C221-4A25-F40120B3064E}"), &guid);
 
 	while (1) {
 		HBLUETOOTH_RADIO_FIND hRadioFind = BluetoothFindFirstRadio(&params, &radio);
@@ -640,11 +642,11 @@ DWORD WINAPI BluetoothThread(LPVOID ignored) {
 		BluetoothFindRadioClose(hRadioFind);
 
 		if (!BluetoothEnableIncomingConnections(NULL, TRUE)) {
-			puts("BluetoothEnableIncomingConnections failed.");
+			//puts("BluetoothEnableIncomingConnections failed.");
 			goto ContinueLater;
 		}
 		if (!BluetoothEnableDiscovery(NULL, TRUE)) {
-			puts("BluetoothEnableDiscovery failed.");
+			//puts("BluetoothEnableDiscovery failed.");
 			goto ContinueLater;
 		}
 
@@ -661,19 +663,19 @@ DWORD WINAPI BluetoothThread(LPVOID ignored) {
 
 		iResult = bind(btSocket, (sockaddr*)&saBT, sizeof(saBT));
 		if (iResult == SOCKET_ERROR) {
-			printf("bind(btSocket) failed with error:%d\n", WSAGetLastError());
+			//printf("bind(btSocket) failed with error:%d\n", WSAGetLastError());
 			goto ContinueLater;
 		}
 
 		iResult = listen(btSocket, 1);
 		if (iResult == SOCKET_ERROR) {
-			printf("listen(btSocket) failed with error:%d\n", WSAGetLastError());
+			//printf("listen(btSocket) failed with error:%d\n", WSAGetLastError());
 			goto ContinueLater;
 		}
 
 		iResult = getsockname(btSocket, (sockaddr*)&saBT, &saBTsize);
 		if (iResult == SOCKET_ERROR) {
-			printf("getsockname(btSocket) failed with error:%d\n", WSAGetLastError());
+			//printf("getsockname(btSocket) failed with error:%d\n", WSAGetLastError());
 			goto ContinueLater;
 		}
 
@@ -685,15 +687,15 @@ DWORD WINAPI BluetoothThread(LPVOID ignored) {
 
 		ZeroMemory(&qsRegInfo, sizeof(WSAQUERYSET));
 		qsRegInfo.dwSize = sizeof(WSAQUERYSET);
-		qsRegInfo.lpszServiceInstanceName = (LPTSTR)TEXT("Remote Control Receiver");
-		qsRegInfo.lpServiceClassId = &guid;
+		qsRegInfo.lpszServiceInstanceName = (LPTSTR)TEXT("J");// length must > 0
+		qsRegInfo.lpServiceClassId = (GUID*)btServerGuid;
 		qsRegInfo.dwNameSpace = NS_BTH;
 		qsRegInfo.dwNumberOfCsAddrs = 1;
 		qsRegInfo.lpcsaBuffer = &sockinfo;
 
 		iResult = WSASetService(&qsRegInfo, RNRSERVICE_REGISTER, 0);
 		if (iResult == SOCKET_ERROR) {
-			printf("WSASetService failed with error:%d\n", WSAGetLastError());
+			//printf("WSASetService failed with error:%d\n", WSAGetLastError());
 			goto ContinueLater;
 		}
 
@@ -705,6 +707,10 @@ DWORD WINAPI BluetoothThread(LPVOID ignored) {
 		Sleep(1000);
 		continue;
 	}
+}
+
+DWORD WINAPI BroadcastThread(LPVOID ignored) {
+	return 0;
 }
 
 int main()
@@ -721,11 +727,10 @@ int main()
 	GetConsoleMode(hIn, &prev_mode);
 	SetConsoleMode(hIn, ENABLE_EXTENDED_FLAGS | (prev_mode & ~ENABLE_QUICK_EDIT_MODE));
 	SetConsoleCursorInfo(hOut, &cursorInfo);
-	SetConsoleTitle(TEXT("Remote Control Receiver"));
+	SetConsoleTitle(TEXT("Receiver"));
 
-	if (scanCodeArray == NULL || scanCodeArraySemaphore == NULL) {
+	if (scanCodeArray == NULL || scanCodeArraySemaphore == NULL)
 		return 1;
-	}
 
 	WSADATA wsaData;
 	int iResult;
@@ -733,18 +738,13 @@ int main()
 
 	// Initialize Winsock
 	iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
-	if (iResult != 0) {
-		printf("WSAStartup failed with error:%d\n", iResult);
+	if (iResult != 0)
 		return 1;
-	}
 
 	// Create a SOCKET for connecting to server
 	ListenSocket = socket(AF_INET/*IPv4*/, SOCK_STREAM, IPPROTO_TCP);
-	if (ListenSocket == INVALID_SOCKET) {
-		printf("socket failed with error:%ld\n", WSAGetLastError());
-		WSACleanup();
-		return 1;
-	}
+	if (ListenSocket == INVALID_SOCKET)
+		goto CleanupExit;
 
 	sockaddr_in sa;
 	sa.sin_family = AF_INET;
@@ -758,39 +758,26 @@ int main()
 		sa.sin_port = 0;// Auto pick available port
 
 		iResult = bind(ListenSocket, (sockaddr*)&sa, sizeof(sa));
-		if (iResult == SOCKET_ERROR) {
-			printf("bind failed with error:%d\n", WSAGetLastError());
-			closesocket(ListenSocket);
-			WSACleanup();
-			return 1;
-		}
+		if (iResult == SOCKET_ERROR)
+			goto CleanupExit;
 	}
 
 	if (sa.sin_port == 0) {
 		// Need to fetch port bound
 		int size = sizeof(sa);
 		iResult = getsockname(ListenSocket, (sockaddr*)&sa, &size);
-		if (iResult == SOCKET_ERROR) {
-			printf("getsockname failed with error:%d\n", WSAGetLastError());
-			closesocket(ListenSocket);
-			WSACleanup();
-			return 1;
-		}
+		if (iResult == SOCKET_ERROR)
+			goto CleanupExit;
 	}
 	boundPort = ntohs(sa.sin_port);
 
 	iResult = listen(ListenSocket, 2);
-	if (iResult == SOCKET_ERROR) {
-		printf("listen failed with error:%d\n", WSAGetLastError());
+	if (iResult == SOCKET_ERROR)
 		goto CleanupExit;
-	}
 
 	eventConnected = CreateEvent(0, false, 0, NULL);
-	if (eventConnected == NULL) {
-		closesocket(ListenSocket);
-		WSACleanup();
-		return 1;
-	}
+	if (eventConnected == NULL)
+		goto CleanupExit;
 
 	handleIpPortPrintingThread = CreateThread(
 		NULL,                   // default security attributes
@@ -800,12 +787,7 @@ int main()
 		0,                      // use default creation flags 
 		NULL);                  // returns the thread identifier 
 	if (handleIpPortPrintingThread == NULL)
-	{
-		puts("CreateThread IpPortPrintingThread failed");
-		closesocket(ListenSocket);
-		WSACleanup();
-		return 1;
-	}
+		goto CleanupExit;
 
 	handleRepeatKeyStrokeThread = CreateThread(
 		NULL,                   // default security attributes
@@ -815,12 +797,7 @@ int main()
 		0,                      // use default creation flags 
 		NULL);                  // returns the thread identifier 
 	if (handleRepeatKeyStrokeThread == NULL)
-	{
-		puts("CreateThread handleRepeatKeyStrokeThread failed");
-		closesocket(ListenSocket);
-		WSACleanup();
-		ExitProcess(1);
-	}
+		goto CleanupExit;
 
 	handleBluetoothThread = CreateThread(
 		NULL,                   // default security attributes
@@ -830,12 +807,17 @@ int main()
 		0,                      // use default creation flags 
 		NULL);                  // returns the thread identifier 
 	if (handleBluetoothThread == NULL)
-	{
-		puts("CreateThread BluetoothThread failed");
-		closesocket(ListenSocket);
-		WSACleanup();
-		ExitProcess(1);
-	}
+		goto CleanupExit;
+
+	handleBroadcastThread = CreateThread(
+		NULL,                   // default security attributes
+		0,                      // use default stack size  
+		BroadcastThread,        // thread function name
+		NULL,                   // argument to thread function 
+		0,                      // use default creation flags 
+		NULL);                  // returns the thread identifier 
+	if (handleBroadcastThread == NULL)
+		goto CleanupExit;
 
 	AcceptRoutine(ListenSocket);
 

@@ -23,11 +23,20 @@
 #define DEFAULT_PORT_STR "1597"
 
 char ClientHeader[] = { 'R', 'C', 'R', 'H' };
+
+#pragma pack(push, 1)// This makes sure variables in the structs are not reordered.
 struct ServerHeader
 {
 	char Password[4] = { 'U', 'E', 'R', 'J' };
 	int Version = htonl(2);
 } serverHeader;
+
+struct BroadcastData
+{
+	USHORT port;
+	ServerHeader serverHeader;
+} broadcastData;
+#pragma pack(pop)
 
 class Msg {
 public:
@@ -717,9 +726,6 @@ DWORD WINAPI BroadcastThread(LPVOID ignored) {
 	sockaddr_in RecvAddr;
 	sockaddr_in server_addr;
 
-	char SendBuf[30] = "Hbeangjkahusaek";
-	int BufLen = 30;
-
 	//---------------------------------------------
 	// Create a socket for sending data
 	UdpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -751,7 +757,7 @@ DWORD WINAPI BroadcastThread(LPVOID ignored) {
 	//RecvAddr.sin_addr.S_un.S_addr = INADDR_BROADCAST;    // Not working
 
 	while (1) {
-		iResult = sendto(UdpSocket, SendBuf, BufLen, 0, (SOCKADDR*)&RecvAddr, sizeof(RecvAddr));
+		iResult = sendto(UdpSocket, (LPCSTR)&broadcastData, sizeof(broadcastData), 0, (SOCKADDR*)&RecvAddr, sizeof(RecvAddr));
 		if (iResult == SOCKET_ERROR) {
 			//wprintf(L"sendto failed with error: %d\n", WSAGetLastError());
 			MyExitProcess();
@@ -816,6 +822,7 @@ int main()
 		if (iResult == SOCKET_ERROR)
 			goto CleanupExit;
 	}
+	broadcastData.port = sa.sin_port;
 	boundPort = ntohs(sa.sin_port);
 
 	iResult = listen(ListenSocket, 2);

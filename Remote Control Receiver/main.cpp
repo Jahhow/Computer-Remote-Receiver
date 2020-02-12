@@ -29,7 +29,7 @@ struct ServerHeader
 {
 	char Password[4] = { 'U', 'E', 'R', 'J' };
 	int Version = htonl(2);
-} serverHeader;
+};
 
 struct BroadcastData
 {
@@ -74,19 +74,20 @@ bool connectedAndVerified = false;
 bool tcpipReady = false;
 bool bluetoothReady = false;
 HANDLE eventConnected;
+HANDLE eventDoUdpBroadcast = CreateEvent(NULL, TRUE, FALSE, NULL);
 BLUETOOTH_RADIO_INFO radioInfo;
 
 BLUETOOTH_RADIO_INFO previousRadioInfo = {};
 addrinfo* previousResult = NULL;
 bool prevBluetoothReady = false;
-bool hasInternetConnected = false;
+bool internetConnected = false;
 BOOL ServerInfoUpdated(addrinfo* result) {
 	bool ret;
 	addrinfo* pai = previousResult;
 	addrinfo* ai = result;
 	DWORD internetFlags;
-	bool newHasInternetConnected = InternetGetConnectedState(&internetFlags, 0);
-	if (newHasInternetConnected != hasInternetConnected) {
+	bool newInternetConnected = InternetGetConnectedState(&internetFlags, 0);
+	if (newInternetConnected != internetConnected) {
 		ret = true;
 		goto Return;
 	}
@@ -118,7 +119,7 @@ BOOL ServerInfoUpdated(addrinfo* result) {
 Return:
 	freeaddrinfo(previousResult);
 	previousResult = result;
-	hasInternetConnected = newHasInternetConnected;
+	internetConnected = newInternetConnected;
 	prevBluetoothReady = bluetoothReady;
 	previousRadioInfo = radioInfo;
 	return ret;
@@ -178,6 +179,7 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 		if (connectedAndVerified) {
 			cls();
 			puts("\n  Connected.");
+			ResetEvent(eventDoUdpBroadcast);
 			iResult = SuspendThread(GetCurrentThread());
 			if (iResult == -1) {
 				//printf("SuspendThread failed with error:%d\n", GetLastError());
@@ -189,7 +191,7 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 			// Resolve the server address and port
 			iResult = getaddrinfo("", DEFAULT_PORT_STR, &hints, &result);
 			if (iResult != 0) {
-				//printf("getaddrinfo failed with error:%d\n", iResult);
+				//printf("getaddrinfo failed with error:%d\n", integer);
 				MyExitProcess();
 			}
 			if (ServerInfoUpdated(result)) {
@@ -218,7 +220,7 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 				puts(
 					"\n"
 					"  Internet:");
-				if (hasInternetConnected) {
+				if (internetConnected) {
 					puts(
 						"\n"
 						"    [IP]");
@@ -226,7 +228,8 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 					addrinfo* ai = result;
 					u_int i = 1;
 					while (ai) {
-						inet_ntop(ai->ai_family, &((sockaddr_in*)ai->ai_addr)->sin_addr, ipv4str, 16);
+						IN_ADDR* inAddr = &((sockaddr_in*)ai->ai_addr)->sin_addr;
+						inet_ntop(ai->ai_family, inAddr, ipv4str, 16);
 						printf("         (%u)  %s\n", i, ipv4str);
 						ai = ai->ai_next;
 						++i;
@@ -234,8 +237,10 @@ DWORD WINAPI IpPortPrintingThread(LPVOID lpParam) {
 					printf(
 						"\n"
 						"    [Port] =      %hu\n", boundPort);
+					SetEvent(eventDoUdpBroadcast);
 				}
 				else {
+					ResetEvent(eventDoUdpBroadcast);
 					puts("\n    You\'re not connected.");
 				}
 			}
@@ -308,7 +313,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 			ClientSocket = TempClientSocket;
 		}
 
-		int iSendResult = send(ClientSocket, (const char*)&serverHeader, sizeof(serverHeader), 0);
+		int iSendResult = send(ClientSocket, (const char*)&broadcastData.serverHeader, sizeof(broadcastData.serverHeader), 0);
 		if (iSendResult == SOCKET_ERROR) {
 			//printf("send failed with error:%d\n", WSAGetLastError());
 			goto CloseClient;
@@ -720,49 +725,31 @@ DWORD WINAPI BluetoothThread(LPVOID ignored) {
 	}
 }
 
+sockaddr_in udpRecvAddr;
+inline void Broadcast(IN_ADDR* inAddr) {
+	udpRecvAddr.sin_addr = *inAddr;
+	udpRecvAddr.sin_addr.S_un.S_un_b.s_b4 = 255;
+	//udpRecvAddr.sin_addr.S_un.S_un_b = { 192,168,0,255 };   // OK
+	//udpRecvAddr.sin_addr.S_un.S_un_b = { 192,168,255,255 }; // Not working
+	//udpRecvAddr.sin_addr.S_un.S_addr = INADDR_BROADCAST;    // Not working
+
+	int iResult = sendto(UdpSocket, (LPCSTR)&broadcastData, sizeof(broadcastData), 0, (SOCKADDR*)&udpRecvAddr, sizeof(udpRecvAddr));
+	if (iResult == SOCKET_ERROR) {
+		//wprintf(L"sendto failed with error: %d\n", WSAGetLastError());
+		MyExitProcess();
+	}
+}
+
 DWORD WINAPI BroadcastThread(LPVOID ignored) {
-	int iResult;
-
-	sockaddr_in RecvAddr;
-	sockaddr_in server_addr;
-
-	//---------------------------------------------
-	// Create a socket for sending data
-	UdpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (UdpSocket == INVALID_SOCKET) {
-		//wprintf(L"socket failed with error: %ld\n", WSAGetLastError());
-		MyExitProcess();
-	}
-
-	char enable = TRUE;
-	/*SO_BROADCAST: broadcast attribute*/
-	if (setsockopt(UdpSocket, SOL_SOCKET, SO_BROADCAST, &enable, sizeof(enable)) == SOCKET_ERROR) {
-		perror("setsockopt");
-		MyExitProcess();
-	}
-
-	//server_addr.sin_family = AF_INET; /*IPv4*/
-	//server_addr.sin_port = INADDR_ANY; /*All the port*/
-	//server_addr.sin_addr.S_un.S_un_b = { 192,168,0,10 }; /*Broadcast address*/
-
-	//if (bind(UdpSocket, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-	//	printf("bind error %d", WSAGetLastError());
-	//	MyExitProcess();
-	//}
-
-	RecvAddr.sin_family = AF_INET;
-	RecvAddr.sin_port = htons(DEFAULT_PORT);
-	RecvAddr.sin_addr.S_un.S_un_b = { 192,168,0,255 };     // OK
-	//RecvAddr.sin_addr.S_un.S_un_b = { 192,168,255,255 }; // Not working
-	//RecvAddr.sin_addr.S_un.S_addr = INADDR_BROADCAST;    // Not working
-
 	while (1) {
-		iResult = sendto(UdpSocket, (LPCSTR)&broadcastData, sizeof(broadcastData), 0, (SOCKADDR*)&RecvAddr, sizeof(RecvAddr));
-		if (iResult == SOCKET_ERROR) {
-			//wprintf(L"sendto failed with error: %d\n", WSAGetLastError());
-			MyExitProcess();
+		WaitForSingleObject(eventDoUdpBroadcast, INFINITE);
+		addrinfo* ai = previousResult;
+		while (ai) {
+			IN_ADDR* inAddr = &((sockaddr_in*)ai->ai_addr)->sin_addr;
+			Broadcast(inAddr);
+			ai = ai->ai_next;
 		}
-		Sleep(2000);
+		Sleep(1000);
 	}
 }
 
@@ -782,16 +769,16 @@ int main()
 	SetConsoleCursorInfo(hOut, &cursorInfo);
 	SetConsoleTitle(TEXT("Receiver"));
 
-	if (scanCodeArray == NULL || scanCodeArraySemaphore == NULL)
+	if (scanCodeArray == NULL || scanCodeArraySemaphore == NULL || eventDoUdpBroadcast == NULL)
 		return 1;
 
 	WSADATA wsaData;
-	int iResult;
+	int integer;
 	mouseInput.type = INPUT_MOUSE;
 
 	// Initialize Winsock
-	iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
-	if (iResult != 0)
+	integer = WSAStartup(MAKEWORD(2, 2), &wsaData);
+	if (integer != 0)
 		return 1;
 
 	// Create a SOCKET for connecting to server
@@ -806,32 +793,46 @@ int main()
 	ZeroMemory(&sa.sin_zero, sizeof(sa.sin_zero));
 
 	// Setup the TCP listening socket
-	iResult = bind(ListenSocket, (sockaddr*)&sa, sizeof(sa));
-	if (iResult == SOCKET_ERROR) {
+	integer = bind(ListenSocket, (sockaddr*)&sa, sizeof(sa));
+	if (integer == SOCKET_ERROR) {
 		sa.sin_port = 0;// Auto pick available port
 
-		iResult = bind(ListenSocket, (sockaddr*)&sa, sizeof(sa));
-		if (iResult == SOCKET_ERROR)
+		integer = bind(ListenSocket, (sockaddr*)&sa, sizeof(sa));
+		if (integer == SOCKET_ERROR)
 			goto CleanupExit;
 	}
 
 	if (sa.sin_port == 0) {
 		// Need to fetch port bound
 		int size = sizeof(sa);
-		iResult = getsockname(ListenSocket, (sockaddr*)&sa, &size);
-		if (iResult == SOCKET_ERROR)
+		integer = getsockname(ListenSocket, (sockaddr*)&sa, &size);
+		if (integer == SOCKET_ERROR)
 			goto CleanupExit;
 	}
 	broadcastData.port = sa.sin_port;
 	boundPort = ntohs(sa.sin_port);
 
-	iResult = listen(ListenSocket, 2);
-	if (iResult == SOCKET_ERROR)
+	integer = listen(ListenSocket, 2);
+	if (integer == SOCKET_ERROR)
 		goto CleanupExit;
 
 	eventConnected = CreateEvent(0, false, 0, NULL);
 	if (eventConnected == NULL)
 		goto CleanupExit;
+
+	UdpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (UdpSocket == INVALID_SOCKET) {
+		//wprintf(L"socket failed with error: %ld\n", WSAGetLastError());
+		goto CleanupExit;
+	}
+
+	integer = TRUE;// Enabled
+	if (setsockopt(UdpSocket, SOL_SOCKET, SO_BROADCAST, (LPCSTR)&integer, sizeof(integer)) == SOCKET_ERROR) {
+		//perror("setsockopt");
+		goto CleanupExit;
+	}
+	udpRecvAddr.sin_family = AF_INET;
+	udpRecvAddr.sin_port = htons(DEFAULT_PORT);
 
 	handleIpPortPrintingThread = CreateThread(
 		NULL,                   // default security attributes

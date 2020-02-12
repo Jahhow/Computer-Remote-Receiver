@@ -254,9 +254,10 @@ int scanCodeArraySize = 8;
 short* scanCodeArray = (short*)malloc(scanCodeArraySize << 1);
 
 // I use 0 to indicates that RepeatKeyStrokeThread is currently not repeating key stroke.
-// Take care of this variable. For the semaphore 'scanCodeArraySemaphore' relies on this number to work properly.
+// Take care of this variable. For the semaphore 'eventDoRepeatKeyStroke' relies on this number to work properly.
 int numScanCodesFilled = 0;
-HANDLE scanCodeArraySemaphore = CreateSemaphore(NULL, 1, 2, NULL);
+HANDLE eventDoRepeatKeyStroke = CreateEvent(NULL, TRUE, FALSE, NULL);
+HANDLE mutexScanCodeArray = CreateMutex(NULL, FALSE, NULL);
 
 DWORD WINAPI RepeatKeyStrokeThread(LPVOID lpParam) {
 
@@ -266,12 +267,13 @@ DWORD WINAPI RepeatKeyStrokeThread(LPVOID lpParam) {
 	input.ki.time = 0;
 
 	while (1) {
-		WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
+		WaitForSingleObject(eventDoRepeatKeyStroke, INFINITE);
+		WaitForSingleObject(mutexScanCodeArray, INFINITE);
 		for (int i = 0; i < numScanCodesFilled; ++i) {
 			input.ki.wScan = scanCodeArray[i];
 			SendInput(1, &input, sizeof(input));
 		}
-		ReleaseSemaphore(scanCodeArraySemaphore, 1, NULL);
+		ReleaseMutex(mutexScanCodeArray);
 		Sleep(30);
 	}
 }
@@ -307,7 +309,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 			SOCKET TempClientSocket = accept(mSocket, NULL, NULL);
 			if (TempClientSocket == INVALID_SOCKET) {
 				//printf("accept failed with error:%d\n", WSAGetLastError());
-				goto CleanupExit;
+				goto EXIT;
 			}
 			WaitForSingleObject(mutexClientSocket, INFINITE);
 			ClientSocket = TempClientSocket;
@@ -325,11 +327,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 		}
 
 		connectedAndVerified = true;
-		iResult = SetEvent(eventConnected);
-		if (iResult == 0) {
-			//printf("SetEvent(eventConnected) failed with error:%d\n", GetLastError());
-			goto CleanupExit;
-		}
+		SetEvent(eventConnected);
 
 		// Receive until the peer shuts down the connection
 		do {
@@ -361,18 +359,18 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 						SendInput(1, &input, sizeof(input));
 						break; }
 					case ButtonAction::Down: {
-						if (numScanCodesFilled != 0)
-							WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
 						SendInput(1, &input, sizeof(input));
+						WaitForSingleObject(mutexScanCodeArray, INFINITE);
 						scanCodeArray[0] = scanCode;
 						numScanCodesFilled = 1;
-						ReleaseSemaphore(scanCodeArraySemaphore, 1, NULL);
+						ReleaseMutex(mutexScanCodeArray);
+						SetEvent(eventDoRepeatKeyStroke);
 						break; }
 					case ButtonAction::Up: {
-						if (numScanCodesFilled != 0) {
-							WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
-							numScanCodesFilled = 0;
-						}
+						ResetEvent(eventDoRepeatKeyStroke);
+						WaitForSingleObject(mutexScanCodeArray, INFINITE);
+						numScanCodesFilled = 0;
+						ReleaseMutex(mutexScanCodeArray);
 						input.ki.dwFlags |= KEYEVENTF_KEYUP;
 						SendInput(1, &input, sizeof(input));
 						break; }
@@ -417,9 +415,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 						}
 						break; }
 					case ButtonAction::Down: {
-						if (numScanCodesFilled != 0)
-							WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
-
+						WaitForSingleObject(mutexScanCodeArray, INFINITE);
 						if (numScanCodes > scanCodeArraySize) {
 							void* newScanCodeArray = realloc(scanCodeArray, scanCodeByteLen);
 							if (newScanCodeArray == NULL) {
@@ -428,19 +424,16 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 							scanCodeArraySize = numScanCodes;
 							scanCodeArray = (short*)newScanCodeArray;
 						}
-						/*for (int i = 0; i < numScanCodes; ++i) {
-							input.ki.wScan = scanCodes[i];
-							SendInput(1, &input, sizeof(input));
-						}*/
 						memcpy(scanCodeArray, scanCodes, scanCodeByteLen);
 						numScanCodesFilled = numScanCodes;
-						ReleaseSemaphore(scanCodeArraySemaphore, 1, NULL);
+						ReleaseMutex(mutexScanCodeArray);
+						SetEvent(eventDoRepeatKeyStroke);
 						break; }
 					case ButtonAction::Up: {
-						if (numScanCodesFilled != 0) {
-							WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
-							numScanCodesFilled = 0;
-						}
+						ResetEvent(eventDoRepeatKeyStroke);
+						WaitForSingleObject(mutexScanCodeArray, INFINITE);
+						numScanCodesFilled = 0;
+						ReleaseMutex(mutexScanCodeArray);
 						input.ki.dwFlags |= KEYEVENTF_KEYUP;
 						for (int i = 0; i < numScanCodes; ++i) {
 							input.ki.wScan = scanCodes[i];
@@ -575,12 +568,12 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 						CloseClipboard();
 
 						if (hold) {
-							if (numScanCodesFilled != 0)
-								WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
+							WaitForSingleObject(mutexScanCodeArray, INFINITE);
 							scanCodeArray[0] = SCS1::L_CTRL;
 							scanCodeArray[1] = SCS1::V;
 							numScanCodesFilled = 2;
-							ReleaseSemaphore(scanCodeArraySemaphore, 1, NULL);
+							ReleaseMutex(mutexScanCodeArray);
+							SetEvent(eventDoRepeatKeyStroke);
 						}
 						else {
 							INPUT input;
@@ -609,9 +602,9 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 				}
 				}
 			}
-			else if (iResult < 0) {
+			else if (iResult == SOCKET_ERROR) {
 				//printf("recv failed with error:%d\n", WSAGetLastError());
-				goto CleanupExit;
+				goto CloseClient;
 			}
 		} while (iResult > 0);
 
@@ -619,6 +612,7 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 		closesocket(ClientSocket);
 		ClientSocket = NULL;
 		ReleaseMutex(mutexClientSocket);
+		ResetEvent(eventDoRepeatKeyStroke);
 		if (connectedAndVerified) {
 			connectedAndVerified = false;
 			ResetEvent(eventConnected);
@@ -626,14 +620,21 @@ void AcceptRoutine(SOCKET mSocket, bool ExitProcessOnError = true) {
 		}
 	}
 
-CleanupExit:
+EXIT:
 	if (ExitProcessOnError)
 		MyExitProcess();
+	else {
+		ReleaseMutex(mutexClientSocket);
+		ResetEvent(eventDoRepeatKeyStroke);
+		if (connectedAndVerified) {
+			connectedAndVerified = false;
+			ResetEvent(eventConnected);
+			ResumeThread(handleIpPortPrintingThread);
+		}
+	}
 }
 
 DWORD WINAPI BluetoothThread(LPVOID ignored) {
-	WaitForSingleObject(scanCodeArraySemaphore, INFINITE);
-
 	int iResult;
 	int saBTsize = sizeof(SOCKADDR_BTH);
 
@@ -769,7 +770,8 @@ int main()
 	SetConsoleCursorInfo(hOut, &cursorInfo);
 	SetConsoleTitle(TEXT("Receiver"));
 
-	if (scanCodeArray == NULL || scanCodeArraySemaphore == NULL || eventDoUdpBroadcast == NULL)
+	if (scanCodeArray == NULL || eventDoRepeatKeyStroke == NULL || eventDoUdpBroadcast == NULL
+		|| mutexScanCodeArray == NULL)
 		return 1;
 
 	WSADATA wsaData;
